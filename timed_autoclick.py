@@ -264,7 +264,8 @@ def main():
                        help='Play sound alert when time is reached')
     parser.add_argument('cliclick_args', 
                        nargs='*',
-                       help='Arguments to pass to cliclick (optional)')
+                       default=["dc:.",],
+                       help='Arguments to pass to cliclick (default: dc:.)')
     
     args = parser.parse_args()
     

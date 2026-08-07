@@ -16,8 +16,7 @@ usage: timed_autoclick.py [-h] [-t TIME] [-o OFFSET] [--no-progress] [--sound]
 Countdown timer with cliclick execution and offset support
 
 positional arguments:
-  cliclick_args         Arguments to pass to cliclick (optional)
-
+  cliclick_args         Arguments to pass to cliclick (default: dc:.)
 options:
   -h, --help            show this help message and exit
   -t TIME, --time TIME  Target time in hh:mm:ss format (default: 07:00:00)
