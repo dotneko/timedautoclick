@@ -1,0 +1,7 @@
+#!/bin/bash
+
+CMD="dc:"
+START_XY="179,734"
+CLOSE_XY="166,594"
+START="$CMD$START_XY"
+CLOSE="$CMD$CLOSE_XY"

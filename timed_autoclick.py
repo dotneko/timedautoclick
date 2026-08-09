@@ -116,6 +116,7 @@ class CountdownTimer:
     def countdown(self):
         """Run the countdown timer"""
         self.target_datetime = self.get_target_datetime()
+        total_initial = int((self.target_datetime - datetime.now()).total_seconds())
         
         print(f"{Colors.GREEN}⏱  Countdown to {self.target_time_str}{Colors.NC}")
         print(f"{Colors.CYAN}⚡ {self.format_offset()}{Colors.NC}")
@@ -139,7 +140,7 @@ class CountdownTimer:
                 milliseconds = self.get_milliseconds()
                 
                 # Calculate progress
-                total_initial = 86400  # 24 hours in seconds
+                #total_initial = 86400  # 24 hours in seconds
                 target_diff = self.target_datetime - now
                 target_total = int(target_diff.total_seconds())
                 if target_total > 0:
@@ -199,7 +200,7 @@ class CountdownTimer:
             print(f"{Colors.RED}Error executing command: {e}{Colors.NC}")
             sys.exit(1)
 
-    def execute_cliclick(self, args):
+    def execute_cliclick(self, args, repeat=1):
         """Execute cliclick with full path"""
         
         # Show timing information
@@ -208,7 +209,7 @@ class CountdownTimer:
         target_time = self.target_datetime
         time_diff = (now - target_time).total_seconds() * 1000
         self.pre_exec_datetime = now
-        print(f"{Colors.NC} {self.pre_exec_datetime} | {Colors.GREEN}✓  Execution time reached!")
+        print(f"{Colors.NC} {self.pre_exec_datetime} | {Colors.GREEN} Execution time reached!")
 
         if not check_cliclick():
             print(f"Error: cliclick not found at {CLICLICK_PATH}")
@@ -227,9 +228,11 @@ class CountdownTimer:
                 subprocess.run([CLICLICK_PATH, "-h"])
             else:
                 # print(f"{Colors.GREEN}⚡  Running: cliclick {' '.join(args)}{Colors.NC}")
-                subprocess.run([CLICLICK_PATH] + args)
+                for num in range(1, repeat + 1):
+                    print(f"{Colors.NC} {datetime.now()} | {Colors.GREEN} [{num}] cliclick {args}")
+                    subprocess.run([CLICLICK_PATH] + args)
                 self.post_exec_datetime = datetime.now()
-                print(f"{Colors.NC} {self.post_exec_datetime} | {Colors.GREEN}✓  Completed task: cliclick {' '.join(args)}{Colors.NC}")
+                print(f"{Colors.NC} {self.post_exec_datetime} | {Colors.GREEN} Completed task: cliclick {' '.join(args)}{Colors.NC}")
         except Exception as e:
             print(f"Error: {e}")
             sys.exit(1)
@@ -256,6 +259,10 @@ def main():
                        type=int,
                        default=0,
                        help='Offset in milliseconds (positive = before, negative = after). Default: 0')
+    parser.add_argument('-r', '--repeat',
+                       type=int,
+                       default=1,
+                       help='Repeat cliclick number of times (default: 1)'),
     parser.add_argument('--no-progress', 
                        action='store_true',
                        help='Hide progress bar')
@@ -286,7 +293,7 @@ def main():
     
     timer.countdown()
     # timer.execute_command("cliclick", args.cliclick_args)
-    timer.execute_cliclick(args.cliclick_args)
+    timer.execute_cliclick(args.cliclick_args, args.repeat)
     
 if __name__ == "__main__":
     main()
