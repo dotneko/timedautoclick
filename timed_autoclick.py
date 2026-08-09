@@ -9,9 +9,9 @@ from datetime import datetime, timedelta
 import re
 
 # Use full path to cliclick (update this with your actual path)
-CLICLICK_PATH = "/usr/local/bin/cliclick"  # Common locations
+# CLICLICK_PATH = "/usr/local/bin/cliclick"  # Common locations
 # Alternative paths to try:
-# CLICLICK_PATH = "/opt/homebrew/bin/cliclick"  # Apple Silicon Mac
+CLICLICK_PATH = "/opt/homebrew/bin/cliclick"  # Apple Silicon Mac
 # CLICLICK_PATH = "/usr/bin/cliclick"
 
 def check_cliclick():
