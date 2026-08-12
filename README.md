@@ -5,12 +5,13 @@ A python script that autoclicks at a specified time adjusted with an offset
 ## Requirements
 
 - Targeted for use on macOS
-- Requires `cliclick` to be installed. See https://github.com/BlueM/cliclick
+- `uv`
+- `cliclick` - See https://github.com/BlueM/cliclick
 
 ## Usage
 
 ```
-usage: timed_autoclick.py [-h] [-t TIME] [-o OFFSET] [-r REPEAT] [--no-progress] [--sound]
+usage: uv run main.py [-h] [-t TIME] [-o OFFSET] [-r REPEAT] [--no-progress] [--sound]
                           [cliclick_args ...]
 
 Countdown timer with cliclick execution and offset support
@@ -34,9 +35,15 @@ options:
     timed_autoclick.py -t 14:30:00 -o 1000 "m" "100,100"  # Click 1 second before 2:30 PM
 ```
 
-## Usage with `config.sample`
+## Usage with `config.local`
+
+Sample config can be modified to local machine => `config.local`
 
 ```
-source config.sample
+source config.local
 timed_autoclick -o 500 -r 3 $START $CLOSE
 ```
+
+## `spgo.sh`
+
+Script to click two points using coordinates specified in `config.local`
