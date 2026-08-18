@@ -233,11 +233,11 @@ def main():
             formatter_class=argparse.RawDescriptionHelpFormatter,
             epilog="""
     Examples:
-    %(prog)s -t 14:30:00                    # Run at 2:30 PM
-    %(prog)s -t 14:30:00 -o 500             # Run 500ms before 2:30 PM
-    %(prog)s -t 14:30:00 -o -200            # Run 200ms after 2:30 PM
-    %(prog)s -t 14:30:00 "m" "100,100"      # Click at position 100,100 at 2:30 PM
-    %(prog)s -t 14:30:00 -o 1000 "m" "100,100"  # Click 1 second before 2:30 PM
+    %(prog)s -t now                                 # Run immediately
+    %(prog)s -t 14:30:00 -o 500                     # Run 500ms before 2:30 PM
+    %(prog)s -t 14:30:00 -o -200                    # Run 200ms after 2:30 PM
+    %(prog)s -t 14:30:00 -p "profile1" -s "login"   # Run 'login' sequence using 'profile1'
+    %(prog)s -t 14:30:00 -p "profile1" -s "login" -o 120 -r 3 # Run 
             """
         )
     parser.add_argument('-t', '--time',
@@ -320,5 +320,21 @@ def main():
     post_exec_datetime = datetime.now()
     print(f"{Colors.NC} {post_exec_datetime} | {Colors.GREEN} Completed task: cliclick {cmd} {Colors.NC}")
 
+    # Ask for queue number
+    while True:
+        queue_input = input("Enter first visible queue num: ")
+        try:
+            queue_num = int(queue_input)
+        except ValueError:
+            print(f"Error: please enter a valid integer")
+        else: 
+            break
+    
+    # Ask whether first attempt too early
+    early_input = input("Was the first attempt too early [y/N]: ")
+    is_early = 1 if (early_input.lower() == "yes" or early_input.lower() == "y") else 0
+    
+    # Output
+    print(f"{profile['name']} | {pre_exec_datetime} | {args.offset} | {queue_num} | {is_early}")
 if __name__ == "__main__":
     main()
