@@ -11,6 +11,9 @@ import re
 from utils.config_manager import ConfigManager
 from utils.sqlite_manager import DatabaseManager
 
+DEFAULT_DB = "login_tracker.db"
+TABLE_NAME = "attempts"
+
 def check_cliclick(cliclick_path):
     """Check if cliclick exists using full path"""
     return os.path.exists(cliclick_path) and os.access(cliclick_path, os.X_OK)
@@ -334,9 +337,21 @@ def main():
 
     execute_cliclick(cliclick_path, "dc:" + pre_xy)
 
+    # Gather data
+    bookdt = pre_exec_datetime + timedelta(days=6)
+    bookdate = bookdt.strftime("%Y-%m-%d")
+    day = bookdt.strftime("%a").upper()
+
+    print("=" * 60)
+    print(f"   {Colors.CYAN}Post-Exec Data Collection {Colors.NC} for {Colors.WHITE}{bookdate} ({day}){Colors.NC}")
+
+    # Ask if ph
+    isph_input = input(f"Enter 'y' if {bookdate} is PH:")
+    ph = 1 if (isph_input.lower() == "yes" or isph_input.lower() == "y") else 0
+
     # Ask for queue number
     while True:
-        queue_input = input("Enter first visible queue num: ")
+        queue_input = input("Enter first queue num: ")
         try:
             queue_num = int(queue_input)
         except ValueError:
@@ -345,51 +360,46 @@ def main():
             break
     
     # Ask whether first attempt too early
-    early_input = input("Enter 'y' if first attempt too early: ")
+    early_input = input("Enter 'y' if too early: ")
     too_early = 1 if (early_input.lower() == "yes" or early_input.lower() == "y") else 0
+
+    # Ask if any notes
+    note = input("Enter any notes (enter to skip): ")
     
-    # Output
-    #dt_object = datetime.strptime(pre_exec_datetime, "%Y-%m-%d %H:%M:%S.%f")
-
-    # 1. Extract date
-    exec_date = pre_exec_datetime.strftime("%Y-%m-%d")
-
-    # 2. Extract day of the week
-    exec_dow = calendar.day_abbr[pre_exec_datetime.weekday()]
-
-    # 3. Extract time
-    exec_time = pre_exec_datetime.strftime("%H:%M:%S.%f")
-
     ### Save results to database
-    db = DatabaseManager("splogin_tracker.db")
+    db = DatabaseManager(DEFAULT_DB)
       
     # Define table schema
     columns = {
         "id": "INTEGER",
         "profile": "TEXT",
-        "date": "TEXT",
-        "exec_time": "TEXT",
-        "day": "TEXT",          # day of the week as 3-letter abbreviation
+        "execdate": "TEXT",
+        "bookdate": "TEXT",
+        "day": "TEXT",           # day of the week as 3-letter abbreviation
+        "ph": "INTEGER",       # 0 for false, 1 for true
         "offset": "INTEGER",
-        "tooearly": "INTEGER",  # 0 for false, 1 for true
-        "queue": "INTEGER"
+        "tooearly": "INTEGER",          # 0 for false, 1 for true
+        "queue": "INTEGER",
+        "note": "TEXT",
     }
         
     # Create the table if it doesn't exist
     db.create_table(
-        table_name="attempts",
+        table_name=TABLE_NAME,
         columns=columns,
         primary_key="id"
     )
 
     attempt_data = {
             "profile": args.profile,
-            "date": exec_date,
-            "exec_time": exec_time,
-            "day": exec_dow,
+            "execdate": pre_exec_datetime,
+            "bookdate": bookdate,
+            "day": day,
+            "ph": ph,
             "offset": args.offset,
             "tooearly": too_early,
-            "queue": queue_num
+            "queue": queue_num,
+            "note": note,
         }
         
     row_id = db.insert("attempts", attempt_data)
