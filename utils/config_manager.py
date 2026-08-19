@@ -110,10 +110,10 @@ class ConfigManager:
             value_str: 
         """
         if not isinstance(value_str, int):
-            raise TypeError(f"Expected an int, got {type(value).__name__}")
-            
-        if value <= 0:
-            raise ValueError(f"Expected a positive non-zero int, got {value}")
+            raise TypeError(f"Expected an int, got {type(value_str).__name__}")
+        
+        if int(value_str) <= 0:
+            raise ValueError(f"Expected a positive non-zero int, got {value_str}")
         return int(value_str)
 
     def _parse_coords(self, coords_str: str) -> tuple:

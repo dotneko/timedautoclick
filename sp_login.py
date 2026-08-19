@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import time
+import calendar
 import subprocess
 import sys
 import os
@@ -201,17 +201,6 @@ class CountdownTimer:
 def execute_cliclick(cliclick_path, cliclick_cmd, repeat=1):
     """Execute cliclick with full path"""
     
-    if not check_cliclick(cliclick_path):
-        print(f"Error: cliclick not found at {cliclick_path}")
-        # Try to find it
-        try:
-            result = subprocess.run(["which", "cliclick"], capture_output=True, text=True)
-            if result.stdout:
-                print(f"Found at: {result.stdout.strip()}")
-        except:
-            pass
-        sys.exit(1)
-    
     try:
         if not cliclick_cmd:
             print(f"{Colors.YELLOW}No command provided. Showing cliclick help:{Colors.NC}")
@@ -219,12 +208,22 @@ def execute_cliclick(cliclick_path, cliclick_cmd, repeat=1):
         else:
             # print(f"{Colors.GREEN}⚡  Running: cliclick {' '.join(args)}{Colors.NC}")
             for num in range(1, repeat + 1):
-                print(f"{Colors.NC} {datetime.now()} | {Colors.GREEN} [{num}] {cliclick_cmd}")
+                print(f"{Colors.NC} {datetime.now()} | {Colors.GREEN} [{num}] {cliclick_cmd} {Colors.NC}")
                 subprocess.run([cliclick_path] + cliclick_cmd.split())
     except Exception as e:
         print(f"Error: {e}")
         sys.exit(1)
 
+def get_current_coords(cliclick_path) -> str:
+    try:
+        result = subprocess.run([cliclick_path, "p"], capture_output=True, text=True)
+    except Exception as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+    parts = result.stdout.split(',')
+    if len(parts) != 2:
+        raise Exception(f"Invalid coordinate format: {result}. Expected 'x,y'")
+    return result.stdout
 
 def main():
     """Main function with argument parsing"""
@@ -272,22 +271,33 @@ def main():
     #                    help='Arguments to pass to cliclick (default: dc:.)')
     
     args = parser.parse_args()
-    
-    # Get profile and sequence
-    profile = config.get_profile(args.profile)
-    sequence = config.get_sequence(args.sequence)
 
-    repeat_times = sequence['repeat'] if args.repeat == 0 else args.repeat
-    start_time = sequence['start_time'] if args.time is None else args.time
+    cliclick_path = config.get_profile_parameter(args.profile, 'cliclick_path')
+
+    sequence = config.get_sequence(args.sequence)
+    repeat_times = config.get_sequence_parameter(args.sequence,'repeat') if args.repeat == 0 else args.repeat
+    start_time = config.get_sequence_parameter(args.sequence,'start_time') if args.time is None else args.time
 
     # Substitute variables in a sequence command
     cmd = config.substitute_variables_for_sequence(args.sequence, args.profile)
 
-    print(f"Using profile '{profile['name']}' to run sequence '{args.sequence}'")
+    # Check cliclick path
+    if not check_cliclick(cliclick_path):
+        print(f"Error: cliclick not found at {cliclick_path}")
+        # Try to find it
+        try:
+            result = subprocess.run(["which", "cliclick"], capture_output=True, text=True)
+            if result.stdout:
+                print(f"Found at: {result.stdout.strip()}")
+        except:
+            pass
+        sys.exit(1)
+    pre_xy = get_current_coords(cliclick_path)
+    print(f"Using profile '{args.profile}' to run sequence '{args.sequence}'")
     print(f"Cliclick cmd: ", cmd)
 
     if start_time == "now":
-        print(f"Excuting sequence {sequence} now")
+        print(f"Excuting sequence '{args.sequence}' now")
         print("=" * 60)
     else:
         print("=" * 60)
@@ -313,12 +323,14 @@ def main():
     # target_time = self.target_datetime
     # time_diff = (now - target_time).total_seconds() * 1000
     pre_exec_datetime = datetime.now()
-    print(f"{Colors.NC} {pre_exec_datetime} | {Colors.GREEN} Execution time reached!")
+    print(f"{Colors.NC} {pre_exec_datetime} | {Colors.GREEN} Execution time reached! {Colors.NC}")
 
-    execute_cliclick(profile['cliclick_path'], cmd, repeat_times)
+    execute_cliclick(cliclick_path, cmd, repeat_times)
     
     post_exec_datetime = datetime.now()
     print(f"{Colors.NC} {post_exec_datetime} | {Colors.GREEN} Completed task: cliclick {cmd} {Colors.NC}")
+
+    execute_cliclick(cliclick_path, "dc:" + pre_xy)
 
     # Ask for queue number
     while True:
@@ -331,10 +343,22 @@ def main():
             break
     
     # Ask whether first attempt too early
-    early_input = input("Was the first attempt too early [y/N]: ")
+    early_input = input("Enter 'y' if first attempt too early: ")
     is_early = 1 if (early_input.lower() == "yes" or early_input.lower() == "y") else 0
     
     # Output
-    print(f"{profile['name']} | {pre_exec_datetime} | {args.offset} | {queue_num} | {is_early}")
+    #dt_object = datetime.strptime(pre_exec_datetime, "%Y-%m-%d %H:%M:%S.%f")
+
+    # 1. Extract date
+    exec_date = pre_exec_datetime.date()
+
+    # 2. Extract day of the week
+    exec_dow = calendar.day_abbr[pre_exec_datetime.weekday()]
+
+    # 3. Extract time
+    exec_time = pre_exec_datetime.time()
+
+    print(f"{args.profile} | {exec_date} | {exec_dow} | {exec_time} | {args.offset} | {queue_num} | {is_early}")
+    
 if __name__ == "__main__":
     main()
