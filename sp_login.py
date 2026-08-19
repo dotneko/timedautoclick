@@ -9,9 +9,7 @@ from datetime import datetime, timedelta
 import re
 
 from utils.config_manager import ConfigManager
-
-# Load the configuration
-config = ConfigManager('config.yaml')
+from utils.sqlite_manager import DatabaseManager
 
 def check_cliclick(cliclick_path):
     """Check if cliclick exists using full path"""
@@ -226,6 +224,10 @@ def get_current_coords(cliclick_path) -> str:
     return result.stdout
 
 def main():
+
+    # Load the configuration
+    config = ConfigManager('splogin_config.yaml')
+
     """Main function with argument parsing"""
     parser = argparse.ArgumentParser(
             description='Countdown timer with cliclick execution and offset support',
@@ -344,21 +346,54 @@ def main():
     
     # Ask whether first attempt too early
     early_input = input("Enter 'y' if first attempt too early: ")
-    is_early = 1 if (early_input.lower() == "yes" or early_input.lower() == "y") else 0
+    too_early = 1 if (early_input.lower() == "yes" or early_input.lower() == "y") else 0
     
     # Output
     #dt_object = datetime.strptime(pre_exec_datetime, "%Y-%m-%d %H:%M:%S.%f")
 
     # 1. Extract date
-    exec_date = pre_exec_datetime.date()
+    exec_date = pre_exec_datetime.strftime("%Y-%m-%d")
 
     # 2. Extract day of the week
     exec_dow = calendar.day_abbr[pre_exec_datetime.weekday()]
 
     # 3. Extract time
-    exec_time = pre_exec_datetime.time()
+    exec_time = pre_exec_datetime.strftime("%H:%M:%S.%f")
 
-    print(f"{args.profile} | {exec_date} | {exec_dow} | {exec_time} | {args.offset} | {queue_num} | {is_early}")
+    ### Save results to database
+    db = DatabaseManager("splogin_tracker.db")
+      
+    # Define table schema
+    columns = {
+        "id": "INTEGER",
+        "profile": "TEXT",
+        "date": "TEXT",
+        "exec_time": "TEXT",
+        "day": "TEXT",          # day of the week as 3-letter abbreviation
+        "offset": "INTEGER",
+        "tooearly": "INTEGER",  # 0 for false, 1 for true
+        "queue": "INTEGER"
+    }
+        
+    # Create the table if it doesn't exist
+    db.create_table(
+        table_name="attempts",
+        columns=columns,
+        primary_key="id"
+    )
+
+    attempt_data = {
+            "profile": args.profile,
+            "date": exec_date,
+            "exec_time": exec_time,
+            "day": exec_dow,
+            "offset": args.offset,
+            "tooearly": too_early,
+            "queue": queue_num
+        }
+        
+    row_id = db.insert("attempts", attempt_data)
+    print(f"Inserted record with ID: {row_id}")
     
 if __name__ == "__main__":
     main()
