@@ -6,6 +6,7 @@ import sys
 import os
 import argparse
 from datetime import datetime, timedelta
+import random
 import re
 
 from utils.config_manager import ConfigManager
@@ -13,6 +14,8 @@ from utils.sqlite_manager import DatabaseManager
 
 DEFAULT_DB = "login_tracker.db"
 TABLE_NAME = "attempts"
+KEEP_ALIVE_SECS = 60
+KEEP_ALIVE_BUFFER = 20
 
 def check_cliclick(cliclick_path):
     """Check if cliclick exists using full path"""
@@ -38,8 +41,6 @@ class CountdownTimer:
         self.running = True
         self.target_datetime = None
         self.execution_datetime = None
-        self.pre_exec_datetime = None
-        self.post_exec_datetime = None
         
     def parse_time(self, time_str):
         """Parse time string in hh:mm:ss format"""
@@ -72,12 +73,6 @@ class CountdownTimer:
             print(f"{Colors.YELLOW}⏰ Target time is in the past. Waiting for tomorrow...{Colors.NC}")
         
         return target_datetime
-
-    def get_pre_exec_datetime(self):
-        return self.pre_exec_datetime
-
-    def get_post_exec_datetime(self):
-        return self.post_exec_datetime
     
     def format_offset(self):
         """Format offset for display"""
@@ -112,25 +107,43 @@ class CountdownTimer:
         except:
             pass  # Silent fail if sound can't be played
     
-    def countdown(self):
+    def countdown(self, cliclick_path, keep_alive_secs, keep_alive_box):
         """Run the countdown timer"""
         self.target_datetime = self.get_target_datetime()
         total_initial = int((self.target_datetime - datetime.now()).total_seconds())
-        
-        print(f"{Colors.GREEN}⏱  Countdown to {self.target_time_str}{Colors.NC}")
+        print("=" * 60)
+        print(f"{Colors.GREEN}⏱  Countdown to {Colors.WHITE}{self.target_time_str}{Colors.NC} | Keep alive: {Colors.WHITE}{keep_alive_secs}s {Colors.NC}")
         print(f"{Colors.CYAN}⚡ {self.format_offset()}{Colors.NC}")
         if self.offset_ms != 0:
             execution_time = self.execution_datetime.strftime("%H:%M:%S.%f")[:-3]
             print(f"{Colors.YELLOW}🎯 cliclick will execute at: {execution_time}{Colors.NC}")
-        print()
-        
+        print("=" * 60)
         try:
+            last_kept_alive = None
             while self.running:
                 now = datetime.now()
                 diff = self.execution_datetime - now
-                
+                remaining_secs = int(diff.total_seconds())
                 if diff.total_seconds() <= 0:
                     break
+                elif (
+                    remaining_secs > KEEP_ALIVE_BUFFER
+                    and keep_alive_secs > 0
+                    and remaining_secs != last_kept_alive
+                    and remaining_secs % keep_alive_secs == 0
+                    ):
+                    last_kept_alive = remaining_secs
+                    # Generate random clicks on area if keep_alive time reached
+                    cleaned = re.sub(r'[()\s]', '', keep_alive_box)
+                    parts = cleaned.split(',')
+                    if len(parts) != 4:
+                        raise Exception(f"Invalid box format: {keep_alive_box}. Expected 'x1,y1,x2,y2'")
+                    x = random.randint(int(parts[0]), int(parts[2]))
+                    y = random.randint(int(parts[1]), int(parts[3]))
+
+                    #print(f"\n{now} | remaining {remaining_secs}s | keep_alive={keep_alive_secs}s")
+                    execute_cliclick(cliclick_path, f"dc:{x},{y}", output=False)
+
                 
                 total_seconds = int(diff.total_seconds())
                 hours = total_seconds // 3600
@@ -199,7 +212,7 @@ class CountdownTimer:
             print(f"{Colors.RED}Error executing command: {e}{Colors.NC}")
             sys.exit(1)
 
-def execute_cliclick(cliclick_path, cliclick_cmd, repeat=1):
+def execute_cliclick(cliclick_path, cliclick_cmd, repeat=1, output=True):
     """Execute cliclick with full path"""
     
     try:
@@ -209,7 +222,8 @@ def execute_cliclick(cliclick_path, cliclick_cmd, repeat=1):
         else:
             # print(f"{Colors.GREEN}⚡  Running: cliclick {' '.join(args)}{Colors.NC}")
             for num in range(1, repeat + 1):
-                print(f"{Colors.NC} {datetime.now()} | {Colors.GREEN} [{num}] {cliclick_cmd} {Colors.NC}")
+                if output:
+                    print(f"{Colors.NC} {datetime.now()} | {Colors.GREEN} [{num}] {cliclick_cmd} {Colors.NC}")
                 subprocess.run([cliclick_path] + cliclick_cmd.split())
     except Exception as e:
         print(f"Error: {e}")
@@ -298,19 +312,20 @@ def main():
             pass
         sys.exit(1)
     pre_xy = get_current_coords(cliclick_path)
-    print(f"Using profile '{args.profile}' to run sequence '{args.sequence}'")
-    print(f"Cliclick cmd: ", cmd)
+    print("=" * 60)
+    print(f"{Colors.GREEN}⏹ Running sequence {Colors.YELLOW}{args.sequence}{Colors.GREEN} with profile {Colors.WHITE}{args.profile}{Colors.NC}")
+    print(f"{Colors.CYAN}⏹ Cliclick cmd: {Colors.WHITE}{cmd}{Colors.NC}")
 
     if start_time == "now":
-        print(f"Excuting sequence '{args.sequence}' now")
+        print(f"{Colors.YELLOW}⏹ Executing sequence {Colors.WHITE}{args.sequence}{Colors.NC} NOW")
         print("=" * 60)
     else:
-        print("=" * 60)
-        print(f"   {Colors.CYAN}Countdown Timer{Colors.NC} to {Colors.WHITE}{args.time}{Colors.NC}")
-        if args.offset != 0:
-            offset_display = f"{args.offset}ms {'BEFORE' if args.offset > 0 else 'AFTER'} target"
-            print(f"   {Colors.YELLOW}Offset: {offset_display}{Colors.NC}")
-        print("=" * 60)
+        # print("=" * 60)
+        # print(f"   {Colors.CYAN}Countdown Timer{Colors.NC} to {Colors.WHITE}{args.time}{Colors.NC}")
+        # if args.offset != 0:
+        #     offset_display = f"{args.offset}ms {'BEFORE' if args.offset > 0 else 'AFTER'} target"
+        #     print(f"   {Colors.YELLOW}Offset: {offset_display}{Colors.NC}")
+        # print("=" * 60)
         
         # Create and run timer
         timer = CountdownTimer(
@@ -319,7 +334,11 @@ def main():
             show_progress=not args.no_progress,
             sound_alert=args.sound
         )  
-        timer.countdown()
+        timer.countdown(
+            cliclick_path,
+            keep_alive_secs=KEEP_ALIVE_SECS,
+            keep_alive_box=config.get_profile_parameter(args.profile, 'alive_box')
+        )
     # timer.execute_command("cliclick", args.cliclick_args)
 
     # Show timing information
@@ -335,7 +354,7 @@ def main():
     post_exec_datetime = datetime.now()
     print(f"{Colors.NC} {post_exec_datetime} | {Colors.GREEN} Completed task: cliclick {cmd} {Colors.NC}")
 
-    execute_cliclick(cliclick_path, "dc:" + pre_xy)
+    execute_cliclick(cliclick_path, "dc:" + pre_xy, output=False)
 
     # Gather data
     bookdt = pre_exec_datetime + timedelta(days=6)
@@ -343,15 +362,15 @@ def main():
     day = bookdt.strftime("%a").upper()
 
     print("=" * 60)
-    print(f"   {Colors.CYAN}Post-Exec Data Collection {Colors.NC} for {Colors.WHITE}{bookdate} ({day}){Colors.NC}")
-
-    # Ask if ph
-    isph_input = input(f"Enter 'y' if {bookdate} is PH:")
-    ph = 1 if (isph_input.lower() == "yes" or isph_input.lower() == "y") else 0
+    print(f"{Colors.CYAN} Post-Exec Data Collection {Colors.NC} for {Colors.WHITE}{bookdate} ({day}){Colors.NC}")
+    print("=" * 60)
 
     # Ask for queue number
     while True:
-        queue_input = input("Enter first queue num: ")
+        queue_input = input(" Enter first queue num: ")
+        if queue_input == "":
+            print(" Data collection aborted, exiting.")
+            sys.exit(0)
         try:
             queue_num = int(queue_input)
         except ValueError:
@@ -359,12 +378,16 @@ def main():
         else: 
             break
     
+    # Ask if ph
+    isph_input = input(f" Enter 'y' if {bookdate} is PH:")
+    ph = 1 if (isph_input.lower() == "yes" or isph_input.lower() == "y") else 0
+
     # Ask whether first attempt too early
-    early_input = input("Enter 'y' if too early: ")
+    early_input = input(" Enter 'y' if too early: ")
     too_early = 1 if (early_input.lower() == "yes" or early_input.lower() == "y") else 0
 
     # Ask if any notes
-    note = input("Enter any notes (enter to skip): ")
+    note = input(" Enter any notes (enter to skip): ")
     
     ### Save results to database
     db = DatabaseManager(DEFAULT_DB)
