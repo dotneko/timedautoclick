@@ -12,9 +12,7 @@ import re
 from utils.config_manager import ConfigManager
 from utils.sqlite_manager import DatabaseManager
 
-DEFAULT_DB = "login_tracker.db"
 TABLE_NAME = "attempts"
-KEEP_ALIVE_SECS = 60
 KEEP_ALIVE_BUFFER = 20
 
 def check_cliclick(cliclick_path):
@@ -244,6 +242,10 @@ def main():
 
     # Load the configuration
     config = ConfigManager('splogin_config.yaml')
+    default_db = config.get_default('db')
+    default_profile = config.get_default('profile')
+    default_sequence = config.get_default('sequence')
+    keep_alive_secs = config.get_default('keep_alive_secs')
 
     """Main function with argument parsing"""
     parser = argparse.ArgumentParser(
@@ -268,7 +270,7 @@ def main():
                        help='Offset in milliseconds (positive = before, negative = after). Default: 0')
     parser.add_argument('-p', '--profile',
                         type=str,
-                        default='default',
+                        default=default_profile,
                         help='Profile name to use. (default: default)')
     parser.add_argument('-r', '--repeat',
                        type=int,
@@ -276,7 +278,7 @@ def main():
                        help='Repeat cliclick number of times (default: 0)'),
     parser.add_argument('-s', '--sequence',
                         type=str,
-                        default='login',
+                        default=default_sequence,
                         help="Cliclick sequence to execute (default: login)")
     parser.add_argument('--no-progress', 
                        action='store_true',
@@ -336,7 +338,7 @@ def main():
         )  
         timer.countdown(
             cliclick_path,
-            keep_alive_secs=KEEP_ALIVE_SECS,
+            keep_alive_secs=keep_alive_secs,
             keep_alive_box=config.get_profile_parameter(args.profile, 'alive_box')
         )
     # timer.execute_command("cliclick", args.cliclick_args)
@@ -390,7 +392,7 @@ def main():
     note = input(" Enter any notes (enter to skip): ")
     
     ### Save results to database
-    db = DatabaseManager(DEFAULT_DB)
+    db = DatabaseManager(default_db)
       
     # Define table schema
     columns = {

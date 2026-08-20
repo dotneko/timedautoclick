@@ -27,6 +27,11 @@ class ConfigManager:
     A configuration manager for YAML files with profiles and sequences support.
     
     The configuration structure is:
+    defaults:
+      db: str
+      profile: str
+      sequence: str
+      keep_alive_secs: int
     profiles:
       profile_name:
         name: str
@@ -55,6 +60,7 @@ class ConfigManager:
         
         self.config_path = Path(config_path)
         self._config_data = {
+            'defaults': {},
             'profiles': {},
             'sequences': {}
         }
@@ -69,6 +75,8 @@ class ConfigManager:
                     self._config_data = loaded_data
                     
                     # Ensure required sections exist
+                    if 'defaults' not in self._config_data:
+                        self._config_data['profiles'] = {}
                     if 'profiles' not in self._config_data:
                         self._config_data['profiles'] = {}
                     if 'sequences' not in self._config_data:
@@ -84,6 +92,7 @@ class ConfigManager:
         else:
             logger.info(f"Configuration file not found. Creating new configuration at {self.config_path}")
             self._config_data = {
+                'defaults': {},
                 'profiles': {},
                 'sequences': {}
             }
@@ -151,7 +160,38 @@ class ConfigManager:
         if len(parts) != 4:
             raise ConfigError(f"Invalid box format: {box_str}. Expected 'x1,y1,x2,y2'")
         return (int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3]))
-    
+
+    # ===== DEFAULTS METHODS =====
+
+    def get_defaults(self) -> List[str]:
+        """
+        Get a list of all defaults names.
+        
+        Returns:
+            List[str]: List of defaults names
+        """
+        return list(self._config_data.get('defaults', {}).keys())
+
+    def get_default(self, default_name: str) -> Dict[str, Any]:
+        """
+        Get a specific default by name.
+        
+        Args:
+            default_name: The name of the default to retrieve
+            
+        Returns:
+            Dict[str, Any]: The default data
+            
+        Raises:
+            ConfigError: If the default doesn't exist
+        """
+        if default_name not in self._config_data.get('defaults', {}):
+            raise ConfigError(f"Default '{default_name}' not found")
+        
+        return self._config_data['defaults'][default_name]
+
+    # ===== PROFILE METHODS =====
+  
     def get_profiles(self) -> List[str]:
         """
         Get a list of all profile names.
@@ -520,12 +560,16 @@ class ConfigManager:
             
             if merge:
                 # Merge profiles and sequences
+                if 'defaults' in imported_data:
+                    self._config_data.setdefault('defaults', {}).update(imported_data['defaults'])            
                 if 'profiles' in imported_data:
                     self._config_data.setdefault('profiles', {}).update(imported_data['profiles'])
                 if 'sequences' in imported_data:
                     self._config_data.setdefault('sequences', {}).update(imported_data['sequences'])
             else:
                 self._config_data = imported_data
+                if 'defaults' not in self._config_data:
+                    self._config_data['defaults'] = {}
                 if 'profiles' not in self._config_data:
                     self._config_data['profiles'] = {}
                 if 'sequences' not in self._config_data:
@@ -630,21 +674,19 @@ def create_default_config(config_path: str) -> None:
         config_path: Path where to create the configuration file
     """
     default_config = {
+        'defaults': {
+            'db': 'tracking.db',
+            'profile': 'profile1',
+            'sequence': 'login',
+        },
         'profiles': {
-            'default': {
-                'name': 'default',
-                'cliclick_path': '/opt/homebrew/bin/cliclick',
-                'start_coords': '179,734',
-                'close_coords': '166,594',
-                'queue_box': '(72,473,293,511)',
-                'alive_box': '(10,150,336,702)'
-            },
             'profile1': {
                 'name': 'janmbp',
                 'cliclick_path': '/opt/homebrew/bin/cliclick',
                 'start_coords': '179,734',
                 'close_coords': '166,594',
-                'queue_box': '(92,381,200,415)'
+                'queue_box': '(72,473,293,511)',
+                'alive_box': '(10,150,336,702)'
             }
         },
         'sequences': {

@@ -1,0 +1,32 @@
+defaults:
+  db: tracker.db
+  profile: profile1
+  sequence: login
+  keep_alive_secs: 120
+profiles:
+  profile1:
+    name: profile1
+    cliclick_path: /opt/homebrew/bin/cliclick
+    start_coords: 179,734
+    close_coords: 180,280
+    queue_box: (72,473,293,511)
+    alive_box: (10,10,100,100)
+  profile2:
+    name: jmac
+    cliclick_path: /opt/homebrew/bin/cliclick
+    start_coords: 179,734
+    close_coords: 166,594
+    queue_box: (92, 381, 200, 415)
+sequences:
+  login:
+    start_time: 07:00:00
+    cliclick_cmd: dc:$start_coords dc:$close_coords dc:$close_coords
+    repeat: 2
+  sessions_1:
+    start_time: now
+    cliclick_cmd: dc:111,744 dc:70,228 dc:65,243 dc:173,708
+    repeat: 1
+  new_task:
+    start_time: now
+    cliclick_cmd: dc:.
+    repeat: 1
