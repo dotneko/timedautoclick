@@ -8,9 +8,12 @@ import argparse
 from datetime import datetime, timedelta
 import random
 import re
+import pyautogui
+import time
 
 from utils.config_manager import ConfigManager
 from utils.sqlite_manager import DatabaseManager
+from utils.screen_monitor import MonitorBuilder, MonitorConfig, ScreenRegion, MonitorStatus
 
 TABLE_NAME = "attempts"
 KEEP_ALIVE_BUFFER = 20
@@ -238,6 +241,63 @@ def get_current_coords(cliclick_path) -> str:
         raise Exception(f"Invalid coordinate format: {result}. Expected 'x,y'")
     return result.stdout
 
+def get_first_non_one_queue_custom():
+    """Get first queue number not equal to '1' using custom configuration"""
+    
+    screen_width, screen_height = pyautogui.size()
+    
+    # Create monitor with custom configuration
+    monitor = (MonitorBuilder()
+        .set_check_interval(0.5)  # Check every 0.5 seconds
+        .set_output_dir("queue_detection")
+        .enable_saving(True)
+        .enable_full_screenshots(True)
+        .enable_logging(True)
+        .add_region("title", 12, 95, 323, 132)
+        .add_region("footer", 30, 695, 309, 728)
+        .add_region("queue", 110, 455, 238, 486)
+        .build())
+    
+    # Customize the config for our specific needs
+    monitor.config.target_queue_number = "1"  # Skip this number
+    monitor.config.stop_on_found = True
+    monitor.config.require_exact_match = False
+    
+    # Variable to store result
+    result_queue = None
+    
+    def on_completion(queue_number, detection_result):
+        nonlocal result_queue
+        result_queue = queue_number
+        print(f"🎯 Target found! Queue number: {queue_number}")
+    
+    # Set completion callback
+    monitor.set_completion_callback(on_completion)
+    
+    # Start monitoring
+    print("🔍 Searching for queue number not equal to '1'...")
+    monitor.start()
+    
+    try:
+        # Wait for completion or timeout
+        timeout = 120  # 2 minutes timeout
+        start_time = time.time()
+        
+        while monitor.get_status() != MonitorStatus.COMPLETED:
+            if time.time() - start_time > timeout:
+                print(f"⏱️ Timeout after {timeout} seconds")
+                break
+            time.sleep(0.5)
+            
+    except KeyboardInterrupt:
+        print("\n⚠️ Stopped by user")
+    finally:
+        monitor.stop()
+    
+    # Get the found queue number
+    found = monitor.get_found_queue_number()
+    return found
+
 def main():
 
     # Load the configuration
@@ -322,14 +382,6 @@ def main():
         print(f"{Colors.YELLOW}⏹ Executing sequence {Colors.WHITE}{args.sequence}{Colors.NC} NOW")
         print("=" * 60)
     else:
-        # print("=" * 60)
-        # print(f"   {Colors.CYAN}Countdown Timer{Colors.NC} to {Colors.WHITE}{args.time}{Colors.NC}")
-        # if args.offset != 0:
-        #     offset_display = f"{args.offset}ms {'BEFORE' if args.offset > 0 else 'AFTER'} target"
-        #     print(f"   {Colors.YELLOW}Offset: {offset_display}{Colors.NC}")
-        # print("=" * 60)
-        
-        # Create and run timer
         timer = CountdownTimer(
             target_time=start_time,
             offset_ms=args.offset,
@@ -341,21 +393,14 @@ def main():
             keep_alive_secs=keep_alive_secs,
             keep_alive_box=config.get_profile_parameter(args.profile, 'alive_box')
         )
-    # timer.execute_command("cliclick", args.cliclick_args)
 
-    # Show timing information
-    now = datetime.now()
-
-    # target_time = self.target_datetime
-    # time_diff = (now - target_time).total_seconds() * 1000
     pre_exec_datetime = datetime.now()
     print(f"{Colors.NC} {pre_exec_datetime} | {Colors.GREEN} Execution time reached! {Colors.NC}")
-
     execute_cliclick(cliclick_path, cmd, repeat_times)
-    
     post_exec_datetime = datetime.now()
     print(f"{Colors.NC} {post_exec_datetime} | {Colors.GREEN} Completed task: cliclick {cmd} {Colors.NC}")
 
+    # Return cursor to original position
     execute_cliclick(cliclick_path, "dc:" + pre_xy, output=False)
 
     # Gather data
@@ -367,18 +412,33 @@ def main():
     print(f"{Colors.CYAN} Post-Exec Data Collection {Colors.NC} for {Colors.WHITE}{bookdate} ({day}){Colors.NC}")
     print("=" * 60)
 
-    # Ask for queue number
-    while True:
-        queue_input = input(" Enter first queue num: ")
+    ## ===== Try detect queue number =====
+    print(" Detecting queue number...")
+    detected_queue = get_first_non_one_queue_custom()
+    if detected_queue:
+        print(f"\n✅ Found: {detected_queue}")
+    else:
+        print("❌ No queue number found")
+
+    ## ===================================
+
+    # Verify queue number
+    queue_num = None
+    if detected_queue:
+        queue_input = input(f" Confirm {detected_queue} with ENTER or enter correct queue: ")
         if queue_input == "":
+            queue_num = detected_queue
+        elif queue_input.lower() == "x":
             print(" Data collection aborted, exiting.")
             sys.exit(0)
+    else:
+        queue_input = input(f" Enter first visible queue number: ")
+    if not queue_num:
         try:
             queue_num = int(queue_input)
         except ValueError:
             print(f"Error: please enter a valid integer")
-        else: 
-            break
+
     
     # Ask if ph
     isph_input = input(f" Enter 'y' if {bookdate} is PH:")

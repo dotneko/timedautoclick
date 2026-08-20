@@ -1,6 +1,9 @@
 config.local
 *.db
 *.yaml
+queue_detection/
+screenshots/
+.*
 
 # Python-generated files
 __pycache__/
