@@ -72,7 +72,7 @@ config.update_profile_parameter('default', 'start_coords', '100,500')
 # Create a new sequence
 new_sequence = {
     'start_time': '08:00:00',
-    'cliclick_cmd': 'dc:start_coords dc:queue_box'
+    'cliclick_cmd': 'dc:start_coords dc:queue_box',
     'repeat': 1
 }
 config.create_sequence('new_task', new_sequence)
@@ -80,7 +80,7 @@ config.create_sequence('new_task', new_sequence)
 # Update a sequence
 updated_sequence = {
     'start_time': '09:00:00',
-    'cliclick_cmd': 'dc:start_coords dc:close_coords'
+    'cliclick_cmd': 'dc:start_coords dc:close_coords',
     'repeat': 2
 }
 config.update_sequence('login', updated_sequence)
