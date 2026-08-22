@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import ast
 import calendar
 import subprocess
 import sys
@@ -13,7 +14,6 @@ import time
 
 from utils.config_manager import ConfigManager
 from utils.sqlite_manager import DatabaseManager
-from utils.screen_monitor import MonitorBuilder, MonitorConfig, ScreenRegion, MonitorStatus
 
 TABLE_NAME = "attempts"
 KEEP_ALIVE_BUFFER = 20
@@ -241,63 +241,6 @@ def get_current_coords(cliclick_path) -> str:
         raise Exception(f"Invalid coordinate format: {result}. Expected 'x,y'")
     return result.stdout
 
-def get_first_non_one_queue_custom():
-    """Get first queue number not equal to '1' using custom configuration"""
-    
-    screen_width, screen_height = pyautogui.size()
-    
-    # Create monitor with custom configuration
-    monitor = (MonitorBuilder()
-        .set_check_interval(0.5)  # Check every 0.5 seconds
-        .set_output_dir("queue_detection")
-        .enable_saving(True)
-        .enable_full_screenshots(True)
-        .enable_logging(True)
-        .add_region("title", 12, 95, 323, 132)
-        .add_region("footer", 30, 695, 309, 728)
-        .add_region("queue", 110, 455, 238, 486)
-        .build())
-    
-    # Customize the config for our specific needs
-    monitor.config.target_queue_number = "1"  # Skip this number
-    monitor.config.stop_on_found = True
-    monitor.config.require_exact_match = False
-    
-    # Variable to store result
-    result_queue = None
-    
-    def on_completion(queue_number, detection_result):
-        nonlocal result_queue
-        result_queue = queue_number
-        print(f"🎯 Target found! Queue number: {queue_number}")
-    
-    # Set completion callback
-    monitor.set_completion_callback(on_completion)
-    
-    # Start monitoring
-    print("🔍 Searching for queue number not equal to '1'...")
-    monitor.start()
-    
-    try:
-        # Wait for completion or timeout
-        timeout = 120  # 2 minutes timeout
-        start_time = time.time()
-        
-        while monitor.get_status() != MonitorStatus.COMPLETED:
-            if time.time() - start_time > timeout:
-                print(f"⏱️ Timeout after {timeout} seconds")
-                break
-            time.sleep(0.5)
-            
-    except KeyboardInterrupt:
-        print("\n⚠️ Stopped by user")
-    finally:
-        monitor.stop()
-    
-    # Get the found queue number
-    found = monitor.get_found_queue_number()
-    return found
-
 def main():
 
     # Load the configuration
@@ -413,12 +356,31 @@ def main():
     print("=" * 60)
 
     ## ===== Try detect queue number =====
-    print(" Detecting queue number...")
-    detected_queue = get_first_non_one_queue_custom()
-    if detected_queue:
-        print(f"\n✅ Found: {detected_queue}")
-    else:
-        print("❌ No queue number found")
+    from utils.screen_monitor import ScreenMonitorBuilder, OCRMode
+
+    title_region = ast.literal_eval(config.get_profile_parameter(args.profile, 'title_box'))
+    footer_region = ast.literal_eval(config.get_profile_parameter(args.profile, 'footer_box'))
+    queue_region = ast.literal_eval(config.get_profile_parameter(args.profile, 'queue_box'))
+    
+    # Using builder pattern
+    monitor = ScreenMonitorBuilder() \
+        .with_title_region(*title_region) \
+        .with_footer_region(*footer_region) \
+        .with_queue_region(*queue_region) \
+        .with_check_interval(0.5) \
+        .with_timeout(30.0) \
+        .with_excluded_values("1", "one") \
+        .with_ocr_mode(OCRMode.STANDARD) \
+        .with_callback('on_queue_found', lambda q, r: print(f"Found: {q}")) \
+        .build()
+
+    # Start monitoring
+    detected_queue = monitor.monitor()
+
+    # Check statistics
+    stats = monitor.get_stats()
+    print(f"Changes detected: {stats['change_count']}")
+    print(f"Found queues: {stats['found_queue_numbers']}")
 
     ## ===================================
 

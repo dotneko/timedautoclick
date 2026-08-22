@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Screen Monitor Library for macOS
-Modified to detect and return the first queue number not equal to "1"
+Screen Monitor with OCR - A library for monitoring screen regions and extracting queue numbers
 """
 
 import os
@@ -9,14 +8,13 @@ import sys
 import time
 import datetime
 import hashlib
+import signal
 import re
-import shutil
-from typing import Optional, Tuple, List, Dict, Callable, Any, Union
+from typing import Optional, Tuple, List, Dict, Callable, Any
 from dataclasses import dataclass, field
 from pathlib import Path
 from enum import Enum
 import threading
-from queue import Queue, Empty
 
 import pyautogui
 import cv2
@@ -24,17 +22,24 @@ import numpy as np
 from PIL import Image
 import pytesseract
 
-# Version
-__version__ = "1.0.0"
+
+class OCRMode(Enum):
+    """OCR preprocessing modes"""
+    STANDARD = "standard"
+    AGGRESSIVE = "aggressive"
+    LIGHT = "light"
+    NONE = "none"
+
 
 class MonitorStatus(Enum):
     """Status of the monitor"""
     IDLE = "idle"
     RUNNING = "running"
-    PAUSED = "paused"
     STOPPED = "stopped"
+    TIMEOUT = "timeout"
+    COMPLETED = "completed"
     ERROR = "error"
-    COMPLETED = "completed"  # NEW: When target queue number is found
+
 
 @dataclass
 class ScreenRegion:
@@ -43,7 +48,6 @@ class ScreenRegion:
     y1: int
     x2: int
     y2: int
-    name: str = "Unnamed Region"
     
     @property
     def width(self) -> int:
@@ -61,610 +65,794 @@ class ScreenRegion:
     def area(self) -> int:
         return self.width * self.height
     
-    def contains_point(self, x: int, y: int) -> bool:
-        """Check if a point is within this region"""
-        return self.x1 <= x <= self.x2 and self.y1 <= y <= self.y2
+    def is_valid(self) -> bool:
+        """Check if the region has valid coordinates"""
+        return self.x1 < self.x2 and self.y1 < self.y2
     
-    def to_dict(self) -> Dict:
-        """Convert to dictionary for serialization"""
-        return {
-            'x1': self.x1, 'y1': self.y1,
-            'x2': self.x2, 'y2': self.y2,
-            'name': self.name
-        }
+    def to_tuple(self) -> Tuple[int, int, int, int]:
+        """Convert to tuple format (x, y, width, height)"""
+        return (self.x1, self.y1, self.width, self.height)
+    
+    @classmethod
+    def from_tuple(cls, coords: Tuple[int, int, int, int]) -> 'ScreenRegion':
+        """Create from tuple format (x1, y1, x2, y2)"""
+        return cls(coords[0], coords[1], coords[2], coords[3])
+
+
+@dataclass
+class OCRResult:
+    """Result of OCR processing"""
+    text: str = ""  # Default empty string
+    confidence: float = 0.0
+    timestamp: datetime.datetime = field(default_factory=datetime.datetime.now)
+    region_name: str = ""
+    queue_number: Optional[str] = None
+    is_valid: bool = False
+    
+    def __str__(self) -> str:
+        return f"OCRResult(text='{self.text}', queue='{self.queue_number}', valid={self.is_valid})"
+
 
 @dataclass
 class MonitorConfig:
     """Configuration for the screen monitor"""
+    # Region definitions
+    title_region: Optional[ScreenRegion] = None
+    footer_region: Optional[ScreenRegion] = None
+    queue_region: Optional[ScreenRegion] = None
+    
+    # Monitoring settings
     check_interval: float = 1.0
+    timeout: Optional[float] = None
     save_on_change: bool = True
-    save_full_screenshots: bool = True
-    output_dir: str = "screenshots"
-    enable_ocr: bool = True
-    enable_logging: bool = True
-    ocr_preprocess: bool = True
-    max_concurrent_checks: int = 1
-    min_text_length: int = 1
-    change_threshold: float = 0.1
-    # NEW: Target queue number to find (skip "1")
-    target_queue_number: str = "1"  # The number to skip
-    stop_on_found: bool = True  # Stop when target is found
-    require_exact_match: bool = False  # If True, exact match; if False, not equal to
-
-@dataclass
-class DetectionResult:
-    """Result of a detection event"""
-    timestamp: datetime.datetime
-    title_text: str
-    footer_text: str
-    queue_text: str
-    queue_number: Optional[str]
-    title_changed: bool
-    footer_changed: bool
-    conditions_met: bool
-    screenshot_paths: List[str] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    is_target_found: bool = False  # NEW: Whether this is the target queue number
-
-class OCRProcessor:
-    """Handles OCR operations with multiple fallback strategies"""
+    save_all_captures: bool = False
+    ocr_mode: OCRMode = OCRMode.STANDARD
     
-    def __init__(self, language: str = 'eng', config: Optional[str] = None):
-        self.language = language
+    # Output settings
+    output_dir: str = ".screenshots"
+    log_enabled: bool = True
+    log_file: str = "monitor.log"
+    
+    # Queue number validation
+    excluded_values: List[str] = field(default_factory=lambda: ["1"])
+    queue_patterns: List[str] = field(default_factory=lambda: [
+        #r'(?:queue|position|number|#)\s*[:.]?\s*([A-Z0-9\-]+)',
+        #r'([A-Z]{2,3}-\d+)',
+        #r'(\d+-\d+)',
+        r'(\d+)',
+        r'(\d{2,})'
+    ])
+    
+    # Trigger conditions
+    title_triggers: List[str] = field(default_factory=lambda: ["VirtualWaitingRoom"])
+    footer_triggers: List[str] = field(default_factory=lambda: ["Exit"])
+    
+    # Callbacks
+    on_queue_found: Optional[Callable] = None
+    on_change_detected: Optional[Callable] = None
+    on_error: Optional[Callable] = None
+    on_status_change: Optional[Callable] = None
+
+
+class ScreenMonitor:
+    """
+    Screen Monitor with OCR capabilities for extracting queue numbers
+    
+    This class provides a comprehensive solution for monitoring screen regions,
+    performing OCR, and extracting queue numbers with validation.
+    """
+    
+    def __init__(self, config: MonitorConfig):
+        """
+        Initialize the screen monitor
+        
+        Args:
+            config: MonitorConfig object with all settings
+        """
         self.config = config
-        self._setup_tesseract()
+        self._validate_config()
+        
+        # State tracking
+        self.status = MonitorStatus.IDLE
+        self.last_ocr_results: Dict[str, OCRResult] = {}
+        self.last_hashes: Dict[str, str] = {}
+        self.change_count = 0
+        self.found_queue_numbers: List[str] = []
+        self.start_time: Optional[float] = None
+        self._stop_monitoring = False
+        self._pause_monitoring = False
+        self._result_lock = threading.Lock()
+        self._stop_event = threading.Event()
+        
+        # Set up output directories
+        self._setup_directories()
+        
+        # Configure Tesseract
+        self._configure_tesseract()
     
-    def _setup_tesseract(self):
-        """Set up Tesseract path with multiple fallback options"""
-        if pytesseract.pytesseract.tesseract_cmd and os.path.exists(pytesseract.pytesseract.tesseract_cmd):
-            return
+    def _validate_config(self):
+        """Validate the configuration"""
+        if self.config.title_region and not self.config.title_region.is_valid():
+            raise ValueError("Invalid title region configuration")
+        if self.config.footer_region and not self.config.footer_region.is_valid():
+            raise ValueError("Invalid footer region configuration")
+        if self.config.queue_region and not self.config.queue_region.is_valid():
+            raise ValueError("Invalid queue region configuration")
         
-        if shutil.which('tesseract'):
-            return
+        if self.config.check_interval <= 0:
+            raise ValueError("Check interval must be positive")
         
-        possible_paths = [
-            '/opt/homebrew/bin/tesseract',
-            '/usr/local/bin/tesseract',
-            '/usr/bin/tesseract',
-            '/opt/local/bin/tesseract',
-        ]
-        
-        for path in possible_paths:
-            if os.path.exists(path):
-                pytesseract.pytesseract.tesseract_cmd = path
-                return
-        
-        raise RuntimeError("Tesseract not found. Please install with: brew install tesseract")
+        if self.config.timeout is not None and self.config.timeout <= 0:
+            raise ValueError("Timeout must be positive")
     
-    def preprocess_image(self, image: Image.Image) -> Image.Image:
-        """Preprocess image for better OCR results"""
+    def _setup_directories(self):
+        """Create output directories"""
+        self.output_dir = Path(self.config.output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create subdirectories
+        self.dirs = {
+            'title': self.output_dir / "title_changes",
+            'footer': self.output_dir / "footer_changes",
+            'queue': self.output_dir / "queue_captures",
+            'full': self.output_dir / "full_captures",
+            'all': self.output_dir / "all_captures"
+        }
+        
+        for dir_path in self.dirs.values():
+            dir_path.mkdir(exist_ok=True)
+    
+    def _configure_tesseract(self):
+        """Configure Tesseract OCR"""
+        try:
+            if sys.platform == "darwin":
+                # Check common Tesseract installation paths
+                paths = [
+                    '/opt/homebrew/bin/tesseract',
+                    '/usr/local/bin/tesseract',
+                    '/usr/bin/tesseract'
+                ]
+                for path in paths:
+                    if Path(path).exists():
+                        pytesseract.pytesseract.tesseract_cmd = path
+                        break
+        except Exception:
+            pass  # Use default path
+    
+    def _preprocess_image(self, image: Image.Image) -> Image.Image:
+        """Preprocess image based on OCR mode"""
+        if self.config.ocr_mode == OCRMode.NONE:
+            return image
+        
+        # Convert PIL to OpenCV format
         img_array = np.array(image)
         
+        # Convert to grayscale if needed
         if len(img_array.shape) == 3:
             gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
         else:
             gray = img_array
         
-        thresh = cv2.adaptiveThreshold(
-            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY, 11, 2
-        )
+        if self.config.ocr_mode == OCRMode.LIGHT:
+            # Light preprocessing: just threshold
+            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            processed = thresh
         
-        denoised = cv2.medianBlur(thresh, 3)
+        elif self.config.ocr_mode == OCRMode.STANDARD:
+            # Standard preprocessing
+            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            processed = cv2.medianBlur(thresh, 3)
         
-        kernel = np.ones((1, 1), np.uint8)
-        processed = cv2.dilate(denoised, kernel, iterations=1)
-        processed = cv2.erode(processed, kernel, iterations=1)
+        elif self.config.ocr_mode == OCRMode.AGGRESSIVE:
+            # Aggressive preprocessing
+            # 1. Apply adaptive threshold
+            thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                          cv2.THRESH_BINARY, 11, 2)
+            # 2. Noise removal
+            denoised = cv2.medianBlur(thresh, 3)
+            # 3. Dilation to connect text
+            kernel = np.ones((1, 1), np.uint8)
+            processed = cv2.dilate(denoised, kernel, iterations=1)
+        else:
+            processed = gray
         
+        # Convert back to PIL
         return Image.fromarray(processed)
     
-    def extract_text(self, image: Image.Image, preprocess: bool = True) -> str:
-        """Extract text from image using OCR"""
+    def _ocr_text(self, image: Image.Image, region_name: str = "") -> OCRResult:
+        """
+        Extract text from image using OCR
+        
+        Args:
+            image: PIL Image object
+            region_name: Name of the region for tracking
+        
+        Returns:
+            OCRResult object with extracted text
+        """
         try:
-            if preprocess:
-                processed_image = self.preprocess_image(image)
-            else:
-                processed_image = image
+            # Preprocess image
+            processed_image = self._preprocess_image(image)
             
-            configs = [
-                self.config,
-                '--psm 6',
-                '--psm 7',
-                '--psm 8',
-                '--psm 3 --oem 3',
-                '--psm 6 --oem 3',
-                None
-            ]
+            # Configure OCR
+            custom_config = '--psm 6 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz '
             
-            for config in configs:
-                try:
-                    if config:
-                        text = pytesseract.image_to_string(processed_image, lang=self.language, config=config)
-                    else:
-                        text = pytesseract.image_to_string(processed_image, lang=self.language)
-                    
-                    if text and text.strip():
-                        return text.strip()
-                except Exception:
-                    continue
+            # Perform OCR
+            text = pytesseract.image_to_string(processed_image, config=custom_config)
+            text = text.strip()
             
-            try:
-                text = pytesseract.image_to_string(image, lang=self.language)
-                return text.strip()
-            except:
-                return ""
-                
+            # Extract queue number if this is the queue region
+            queue_number = None
+            if region_name == "queue":
+                queue_number = self._extract_queue_number(text)
+            
+            return OCRResult(
+                text=text,
+                timestamp=datetime.datetime.now(),
+                region_name=region_name,
+                queue_number=queue_number,
+                is_valid=self._is_valid_queue_number(queue_number) if queue_number else False
+            )
+        
         except Exception as e:
-            raise RuntimeError(f"OCR failed: {e}")
+            self._handle_error(f"OCR Error for {region_name}: {e}")
+            return OCRResult(text="", region_name=region_name)
     
-    def extract_queue_number(self, text: str) -> Optional[str]:
+    def _extract_queue_number(self, text: str) -> Optional[str]:
         """Extract queue number from OCR text"""
-        cleaned_text = text.strip()
+        if not text:
+            return None
         
-        patterns = [
-            (r'queue\s*(?:number|#)?\s*[:.]?\s*([A-Z0-9\-]+)', re.IGNORECASE),
-            (r'position\s*(?:number|#)?\s*[:.]?\s*([A-Z0-9\-]+)', re.IGNORECASE),
-            (r'waiting\s*(?:number|#)?\s*[:.]?\s*([A-Z0-9\-]+)', re.IGNORECASE),
-            (r'([A-Z]{2,3}[-]?\d+)', re.IGNORECASE),
-            (r'(\d+[-]\d+)', re.IGNORECASE),
-            (r'#\s*(\d+)', re.IGNORECASE),
-            (r'(\d{4,})', re.IGNORECASE),
-            (r'(\d{3})', re.IGNORECASE),
-        ]
-        
-        for pattern, flags in patterns:
-            match = re.search(pattern, cleaned_text, flags)
+        for pattern in self.config.queue_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
             if match:
                 return match.group(1)
         
-        word_match = re.search(r'\b([A-Z0-9]{3,})\b', cleaned_text, re.IGNORECASE)
-        return word_match.group(1) if word_match else None
-
-class ScreenMonitor:
-    """Main screen monitoring class with event-driven architecture"""
+        # If no pattern matches, return the entire cleaned text
+        cleaned = re.sub(r'[^A-Za-z0-9\-]', '', text)
+        return cleaned if cleaned else None
     
-    def __init__(self, config: Optional[MonitorConfig] = None):
-        self.config = config or MonitorConfig()
-        self.regions: Dict[str, ScreenRegion] = {}
-        self.ocr_processor = OCRProcessor()
+    def _is_valid_queue_number(self, queue_number: Optional[str]) -> bool:
+        """Check if the queue number is valid"""
+        if not queue_number:
+            return False
         
-        # State
-        self.status = MonitorStatus.IDLE
-        self.last_results: Dict[str, str] = {}
-        self.last_hashes: Dict[str, str] = {}
-        self.detection_count = 0
-        self._running = False
-        self._pause_event = threading.Event()
-        self._stop_event = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-        self._event_queue = Queue()
+        queue_number = queue_number.strip()
         
-        # NEW: Store the found queue number
-        self.found_queue_number = None
-        self.target_found = False
+        # Check against excluded values
+        for excluded in self.config.excluded_values:
+            if queue_number.lower() == excluded.lower():
+                return False
         
-        # Callbacks
-        self._callbacks: List[Callable] = []
-        self._completion_callback: Optional[Callable] = None  # NEW
+        # Additional validation: check if it's a reasonable number
+        if queue_number.isdigit():
+            # If it's just a single digit, it's probably invalid
+            if len(queue_number) == 1:
+                return False
         
-        # Setup directories
-        self._setup_directories()
+        return True
     
-    def _setup_directories(self):
-        """Create necessary directories"""
-        output_dir = Path(self.config.output_dir)
-        self.dirs = {
-            'root': output_dir,
-            'title': output_dir / 'title_changes',
-            'footer': output_dir / 'footer_changes',
-            'queue': output_dir / 'queue_captures',
-            'full': output_dir / 'full_captures'
-        }
-        for dir_path in self.dirs.values():
-            dir_path.mkdir(parents=True, exist_ok=True)
-    
-    def add_region(self, name: str, region: ScreenRegion) -> None:
-        """Add a region to monitor"""
-        if name in self.regions:
-            raise ValueError(f"Region '{name}' already exists")
-        
-        region.name = name
-        self.regions[name] = region
-        self.last_results[name] = ""
-        self.last_hashes[name] = ""
-    
-    def remove_region(self, name: str) -> None:
-        """Remove a monitored region"""
-        if name in self.regions:
-            del self.regions[name]
-            del self.last_results[name]
-            del self.last_hashes[name]
-    
-    def set_callback(self, callback: Callable[[DetectionResult], None]) -> None:
-        """Set callback function for detection events"""
-        self._callbacks.append(callback)
-    
-    def set_completion_callback(self, callback: Callable[[Optional[str], DetectionResult], None]) -> None:
-        """
-        NEW: Set callback for when the target queue number is found
-        
-        Args:
-            callback: Function that accepts (queue_number, detection_result)
-        """
-        self._completion_callback = callback
-    
-    def clear_callbacks(self) -> None:
-        """Clear all registered callbacks"""
-        self._callbacks.clear()
-    
-    def start(self) -> None:
-        """Start monitoring in a separate thread"""
-        if self.status == MonitorStatus.RUNNING:
-            raise RuntimeError("Monitor is already running")
-        
-        if not self.regions:
-            raise RuntimeError("No regions added. Use add_region() first.")
-        
-        # Reset state
-        self.found_queue_number = None
-        self.target_found = False
-        
-        self._running = True
-        self._stop_event.clear()
-        self._pause_event.clear()
-        self.status = MonitorStatus.RUNNING
-        
-        self._thread = threading.Thread(target=self._monitor_loop, daemon=True)
-        self._thread.start()
-    
-    def stop(self) -> None:
-        """Stop monitoring"""
-        if self.status in [MonitorStatus.RUNNING, MonitorStatus.PAUSED]:
-            self._running = False
-            self._stop_event.set()
-            self.status = MonitorStatus.STOPPED
-            if self._thread:
-                self._thread.join(timeout=5.0)
-    
-    def pause(self) -> None:
-        """Pause monitoring"""
-        if self.status == MonitorStatus.RUNNING:
-            self.status = MonitorStatus.PAUSED
-            self._pause_event.set()
-    
-    def resume(self) -> None:
-        """Resume monitoring"""
-        if self.status == MonitorStatus.PAUSED:
-            self._pause_event.clear()
-            self.status = MonitorStatus.RUNNING
-    
-    def get_status(self) -> MonitorStatus:
-        """Get current monitor status"""
-        return self.status
-    
-    def get_found_queue_number(self) -> Optional[str]:
-        """NEW: Get the queue number that was found"""
-        return self.found_queue_number
-    
-    def is_target_found(self) -> bool:
-        """NEW: Check if target queue number was found"""
-        return self.target_found
-    
-    def get_statistics(self) -> Dict:
-        """Get monitoring statistics"""
-        return {
-            'status': self.status.value,
-            'detection_count': self.detection_count,
-            'regions_monitored': len(self.regions),
-            'target_found': self.target_found,
-            'found_queue_number': self.found_queue_number,
-            'total_time': time.time() - getattr(self, '_start_time', time.time())
-        }
+    def _get_text_hash(self, text: str) -> str:
+        """Compute hash of text for change detection"""
+        return hashlib.md5(text.encode('utf-8')).hexdigest()
     
     def _capture_region(self, region: ScreenRegion) -> Image.Image:
         """Capture a specific screen region"""
-        return pyautogui.screenshot(region=(region.x1, region.y1, region.width, region.height))
+        return pyautogui.screenshot(region=region.to_tuple())
     
     def _save_screenshot(self, image: Image.Image, prefix: str, suffix: str = "") -> str:
         """Save screenshot with timestamp"""
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
         filename = f"{prefix}_{timestamp}{suffix}.png"
-        filepath = self.dirs['root'] / filename
+        filepath = self.output_dir / filename
         image.save(filepath)
         return str(filepath)
     
-    def _save_to_category(self, image: Image.Image, category: str, suffix: str = "") -> str:
-        """Save screenshot to category directory"""
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-        filename = f"{category}_{timestamp}{suffix}.png"
-        filepath = self.dirs[category] / filename
+    def _save_region_screenshot(self, image: Image.Image, region_name: str, 
+                                queue_number: Optional[str] = None) -> str:
+        """Save screenshot to region-specific directory"""
+        if queue_number:
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"{region_name}_{timestamp}_{queue_number}.png"
+        else:
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+            filename = f"{region_name}_{timestamp}.png"
+        
+        filepath = self.dirs.get(region_name, self.output_dir) / filename
         image.save(filepath)
         return str(filepath)
     
-    def _compute_text_hash(self, text: str) -> str:
-        """Compute hash of text for change detection"""
-        return hashlib.md5(text.encode()).hexdigest()
-    
-    def _log_detection(self, result: DetectionResult) -> None:
-        """Log detection result to file"""
-        if not self.config.enable_logging:
+    def _log_event(self, event_type: str, data: Dict[str, Any]):
+        """Log events to file"""
+        if not self.config.log_enabled:
             return
         
-        log_file = self.dirs['root'] / "detection_log.txt"
-        with open(log_file, 'a') as f:
-            f.write(f"[{result.timestamp.isoformat()}] Detection #{self.detection_count}\n")
-            f.write(f"  Title: '{result.title_text}'\n")
-            f.write(f"  Footer: '{result.footer_text}'\n")
-            f.write(f"  Queue Number: {result.queue_number}\n")
-            f.write(f"  Conditions Met: {result.conditions_met}\n")
-            f.write(f"  Target Found: {result.is_target_found}\n")
-            f.write(f"  Screenshots: {', '.join(result.screenshot_paths)}\n")
+        log_path = self.output_dir / self.config.log_file
+        timestamp = datetime.datetime.now().isoformat()
+        
+        with open(log_path, 'a') as f:
+            f.write(f"[{timestamp}] {event_type}\n")
+            for key, value in data.items():
+                f.write(f"  {key}: {value}\n")
             f.write("-" * 50 + "\n")
     
-    def _check_conditions(self, title_text: str, footer_text: str) -> bool:
-        """Check if conditions are met for queue detection"""
-        return "Virtual Waiting Room" in title_text and "Exit" in footer_text
-    
-    def _is_target_queue_number(self, queue_number: str) -> bool:
-        """
-        NEW: Check if this is the target queue number (not equal to "1")
-        """
-        if not queue_number:
-            return False
-        
-        # Clean the queue number
-        cleaned = queue_number.strip()
-        
-        # Check if it's not equal to "1"
-        if self.config.require_exact_match:
-            # Exact match required
-            return cleaned == self.config.target_queue_number
+    def _handle_error(self, error_message: str):
+        """Handle errors"""
+        if self.config.on_error:
+            self.config.on_error(error_message)
         else:
-            # Not equal to target (skip "1")
-            return cleaned != self.config.target_queue_number
+            print(f"Error: {error_message}")
     
-    def _process_detection(self, title_text: str, footer_text: str, 
-                          title_image: Image.Image, footer_image: Image.Image,
-                          queue_image: Image.Image, full_screenshot: Image.Image) -> Optional[DetectionResult]:
-        """Process a detection event"""
-        result = DetectionResult(
-            timestamp=datetime.datetime.now(),
-            title_text=title_text,
-            footer_text=footer_text,
-            queue_text="",
-            queue_number=None,
-            title_changed=False,
-            footer_changed=False,
-            conditions_met=False,
-            screenshot_paths=[],
-            is_target_found=False
-        )
+    def _handle_status_change(self, new_status: MonitorStatus):
+        """Handle status changes"""
+        self.status = new_status
+        if self.config.on_status_change:
+            self.config.on_status_change(new_status)
+    
+    def _check_triggers(self, title_text: str, footer_text: str) -> bool:
+        """Check if trigger conditions are met"""
+        title_match = any(trigger in title_text for trigger in self.config.title_triggers)
+        footer_match = any(trigger in footer_text for trigger in self.config.footer_triggers)
+        return title_match or footer_match
+    
+    def _process_ocr_results(self, results: Dict[str, OCRResult]) -> Optional[str]:
+        """
+        Process OCR results and check for queue numbers
+        
+        Returns:
+            Queue number if found and valid, None otherwise
+        """
+        # Use default empty OCRResult if region not found
+        title_result = results.get('title', OCRResult(text="", region_name="title"))
+        footer_result = results.get('footer', OCRResult(text="", region_name="footer"))
+        queue_result = results.get('queue', OCRResult(text="", region_name="queue"))
         
         # Check for changes
-        title_hash = self._compute_text_hash(title_text)
-        footer_hash = self._compute_text_hash(footer_text)
-        
-        result.title_changed = title_hash != self.last_hashes.get('title', '')
-        result.footer_changed = footer_hash != self.last_hashes.get('footer', '')
-        
-        # Update last values
-        self.last_hashes['title'] = title_hash
-        self.last_hashes['footer'] = footer_hash
-        self.last_results['title'] = title_text
-        self.last_results['footer'] = footer_text
-        
-        # Save screenshots on change
-        if self.config.save_on_change:
-            if result.title_changed:
-                path = self._save_to_category(title_image, 'title')
-                result.screenshot_paths.append(path)
+        for region_name, result in results.items():
+            text_hash = self._get_text_hash(result.text)
+            old_hash = self.last_hashes.get(region_name, "")
             
-            if result.footer_changed:
-                path = self._save_to_category(footer_image, 'footer')
-                result.screenshot_paths.append(path)
-        
-        # Check conditions
-        result.conditions_met = self._check_conditions(title_text, footer_text)
-        
-        if result.conditions_met and self.config.enable_ocr:
-            # Process queue
-            queue_text = self.ocr_processor.extract_text(queue_image, self.config.ocr_preprocess)
-            result.queue_text = queue_text
-            result.queue_number = self.ocr_processor.extract_queue_number(queue_text)
+            if text_hash != old_hash and self.config.save_on_change:
+                self.change_count += 1
+                if self.config.on_change_detected:
+                    self.config.on_change_detected(region_name, result.text)
+                
+                # Get the region object
+                region_obj = getattr(self.config, f"{region_name}_region", None)
+                if region_obj:
+                    # Save change screenshot
+                    self._save_region_screenshot(
+                        self._capture_region(region_obj),
+                        f"change_{region_name}"
+                    )
             
-            if result.queue_number:
-                # Check if this is the target queue number
-                result.is_target_found = self._is_target_queue_number(result.queue_number)
+            self.last_hashes[region_name] = text_hash
+            self.last_ocr_results[region_name] = result
+        
+        # Check for queue number
+        if queue_result.queue_number and queue_result.is_valid:
+            # Check trigger conditions
+            if self._check_triggers(title_result.text, footer_result.text):
+                # Valid queue number found
+                with self._result_lock:
+                    self.found_queue_numbers.append(queue_result.queue_number)
                 
-                if result.is_target_found:
-                    # NEW: Store the found queue number
-                    self.found_queue_number = result.queue_number
-                    self.target_found = True
-                    print(f"\n🎯 TARGET FOUND: Queue number '{result.queue_number}' detected!")
-                    print(f"   (Skipped '1' as requested)")
-                
-                # Save queue screenshots
-                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                suffix = f"_{result.queue_number}" if result.queue_number else ""
-                
-                queue_path = self._save_to_category(queue_image, 'queue', suffix)
-                result.screenshot_paths.append(queue_path)
-                
-                if self.config.save_full_screenshots:
-                    full_path = self._save_to_category(full_screenshot, 'full', suffix)
-                    result.screenshot_paths.append(full_path)
-                
-                self.detection_count += 1
-                
-                # Log detection
-                self._log_detection(result)
-                
-                # NEW: If target found and auto-stop is enabled, stop monitoring
-                if result.is_target_found and self.config.stop_on_found:
-                    print(f"🛑 Stopping monitor - target queue number found: {result.queue_number}")
-                    self._running = False
-                    self._stop_event.set()
-                    self.status = MonitorStatus.COMPLETED
+                # Save screenshots
+                if self.config.save_on_change:
+                    # Save queue region
+                    if self.config.queue_region:
+                        self._save_region_screenshot(
+                            self._capture_region(self.config.queue_region),
+                            "queue",
+                            queue_result.queue_number
+                        )
                     
-                    # Call completion callback if set
-                    if self._completion_callback:
-                        self._completion_callback(result.queue_number, result)
+                    # Save full screenshot
+                    full_screenshot = pyautogui.screenshot()
+                    self._save_region_screenshot(
+                        full_screenshot,
+                        "full",
+                        queue_result.queue_number
+                    )
+                
+                # Log the event
+                self._log_event("QUEUE_FOUND", {
+                    'queue_number': queue_result.queue_number,
+                    'title_text': title_result.text,
+                    'footer_text': footer_result.text,
+                    'queue_text': queue_result.text
+                })
+                
+                # Call callback
+                if self.config.on_queue_found:
+                    self.config.on_queue_found(queue_result.queue_number, results)
+                
+                return queue_result.queue_number
         
-        return result
+        return None
     
-    def _monitor_loop(self) -> None:
-        """Main monitoring loop"""
-        self._start_time = time.time()
-        print(f"Screen Monitor started. Monitoring {len(self.regions)} regions...")
-        print(f"Looking for queue number not equal to '{self.config.target_queue_number}'")
-        print(f"Output directory: {self.config.output_dir}")
+    def monitor(self, timeout: Optional[float] = None) -> Optional[str]:
+        """
+        Main monitoring method
         
-        while self._running and not self._stop_event.is_set():
-            # Check pause
-            if self._pause_event.is_set():
-                time.sleep(0.1)
-                continue
+        Args:
+            timeout: Override timeout from config
+        
+        Returns:
+            Found queue number or None
+        """
+        # Use provided timeout or config timeout
+        actual_timeout = timeout if timeout is not None else self.config.timeout
+        
+        self._handle_status_change(MonitorStatus.RUNNING)
+        self.start_time = time.time()
+        self._stop_monitoring = False
+        self._stop_event.clear()
+        
+        # Set up signal handler
+        def signal_handler(signum, frame):
+            self.stop()
+        
+        original_handler = signal.signal(signal.SIGINT, signal_handler)
+        
+        try:
+            print(f"Screen Monitor started")
+            print(f"Check interval: {self.config.check_interval}s")
+            print(f"Timeout: {actual_timeout if actual_timeout else 'No timeout'}")
+            print("Monitoring for valid queue numbers...")
+            print("Press Ctrl+C to stop monitoring")
+            print("-" * 50)
             
-            try:
-                # Capture all regions
-                captured_images = {}
-                for name, region in self.regions.items():
-                    captured_images[name] = self._capture_region(region)
+            found_queue = None
+            
+            while not self._stop_monitoring:
+                # Check timeout
+                if actual_timeout is not None:
+                    elapsed = time.time() - self.start_time
+                    if elapsed >= actual_timeout:
+                        self._handle_status_change(MonitorStatus.TIMEOUT)
+                        print(f"\n⏰ Timeout reached ({actual_timeout}s)")
+                        break
                 
-                # Get title and footer text
-                title_text = ""
-                footer_text = ""
-                queue_image = None
+                # Check if paused
+                if self._pause_monitoring:
+                    time.sleep(0.1)
+                    continue
                 
-                if 'title' in captured_images:
-                    title_text = self.ocr_processor.extract_text(
-                        captured_images['title'], self.config.ocr_preprocess
-                    )
+                # Capture regions
+                regions = {
+                    'title': (self.config.title_region, "title"),
+                    'footer': (self.config.footer_region, "footer"),
+                    'queue': (self.config.queue_region, "queue")
+                }
                 
-                if 'footer' in captured_images:
-                    footer_text = self.ocr_processor.extract_text(
-                        captured_images['footer'], self.config.ocr_preprocess
-                    )
+                results = {}
+                images = {}
                 
-                if 'queue' in captured_images:
-                    queue_image = captured_images['queue']
+                for name, (region, region_name) in regions.items():
+                    if region:
+                        image = self._capture_region(region)
+                        images[name] = image
+                        results[name] = self._ocr_text(image, region_name)
+                    else:
+                        # Create empty result for missing region
+                        results[name] = OCRResult(text="", region_name=region_name)
                 
-                # Get full screenshot if needed
-                full_screenshot = pyautogui.screenshot() if self.config.save_full_screenshots else None
-                
-                # Process detection
-                result = self._process_detection(
-                    title_text, footer_text,
-                    captured_images.get('title', None),
-                    captured_images.get('footer', None),
-                    queue_image,
-                    full_screenshot
-                )
-                
-                # Trigger callbacks
-                if result and (result.title_changed or result.footer_changed or result.conditions_met):
-                    for callback in self._callbacks:
-                        try:
-                            callback(result)
-                        except Exception as e:
-                            print(f"Callback error: {e}")
-                
-                # If target was found and we stopped, break the loop
-                if self.target_found and not self._running:
+                # Process results
+                found_queue = self._process_ocr_results(results)
+                if found_queue:
+                    self._handle_status_change(MonitorStatus.COMPLETED)
+                    print(f"\n✅ Valid queue number found: {found_queue}")
                     break
                 
-            except Exception as e:
-                self.status = MonitorStatus.ERROR
-                print(f"Monitor error: {e}")
-                if not self._running:
-                    break
-            
-            # Wait before next check
-            time.sleep(self.config.check_interval)
+                # Wait before next check
+                time.sleep(self.config.check_interval)
         
-        if self.target_found:
-            self.status = MonitorStatus.COMPLETED
-            print(f"✅ Monitor completed successfully - found queue number: {self.found_queue_number}")
-        else:
-            self.status = MonitorStatus.STOPPED
-            print("Screen Monitor stopped without finding target.")
+        except Exception as e:
+            self._handle_status_change(MonitorStatus.ERROR)
+            self._handle_error(f"Monitoring error: {e}")
+            raise
+        
+        finally:
+            signal.signal(signal.SIGINT, original_handler)
+            if self.status == MonitorStatus.RUNNING:
+                self._handle_status_change(MonitorStatus.STOPPED)
+        
+        return found_queue
+    
+    def stop(self):
+        """Stop monitoring"""
+        self._stop_monitoring = True
+        self._stop_event.set()
+        self._handle_status_change(MonitorStatus.STOPPED)
+        print("\n🛑 Monitoring stopped")
+    
+    def pause(self):
+        """Pause monitoring"""
+        self._pause_monitoring = True
+        print("⏸️ Monitoring paused")
+    
+    def resume(self):
+        """Resume monitoring"""
+        self._pause_monitoring = False
+        print("▶️ Monitoring resumed")
+    
+    def get_status(self) -> MonitorStatus:
+        """Get current monitor status"""
+        return self.status
+    
+    def get_found_queue_numbers(self) -> List[str]:
+        """Get all found queue numbers"""
+        with self._result_lock:
+            return self.found_queue_numbers.copy()
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get monitoring statistics"""
+        elapsed = time.time() - self.start_time if self.start_time else 0
+        return {
+            'status': self.status.value,
+            'change_count': self.change_count,
+            'found_queue_numbers': self.get_found_queue_numbers(),
+            'elapsed_time': elapsed,
+            'last_ocr_results': {k: str(v) for k, v in self.last_ocr_results.items()}
+        }
+    
+    def test_regions(self) -> Dict[str, bool]:
+        """Test if regions are valid and visible"""
+        results = {}
+        for name, region in [
+            ('title', self.config.title_region),
+            ('footer', self.config.footer_region),
+            ('queue', self.config.queue_region)
+        ]:
+            if region:
+                try:
+                    image = self._capture_region(region)
+                    results[name] = image.size[0] > 0 and image.size[1] > 0
+                except Exception:
+                    results[name] = False
+            else:
+                results[name] = False
+        return results
+    
+    def test_ocr(self) -> Dict[str, OCRResult]:
+        """Test OCR on current regions"""
+        results = {}
+        for name, region in [
+            ('title', self.config.title_region),
+            ('footer', self.config.footer_region),
+            ('queue', self.config.queue_region)
+        ]:
+            if region:
+                image = self._capture_region(region)
+                results[name] = self._ocr_text(image, name)
+            else:
+                results[name] = OCRResult(text="", region_name=name)
+        return results
 
-class MonitorBuilder:
-    """Builder class for easy configuration of ScreenMonitor"""
+
+class ScreenMonitorBuilder:
+    """Builder class for creating ScreenMonitor with fluent API"""
     
     def __init__(self):
         self.config = MonitorConfig()
-        self.regions: Dict[str, ScreenRegion] = {}
-        self.callbacks: List[Callable] = []
     
-    def set_check_interval(self, interval: float) -> 'MonitorBuilder':
+    def with_title_region(self, x1: int, y1: int, x2: int, y2: int) -> 'ScreenMonitorBuilder':
+        self.config.title_region = ScreenRegion(x1, y1, x2, y2)
+        return self
+    
+    def with_footer_region(self, x1: int, y1: int, x2: int, y2: int) -> 'ScreenMonitorBuilder':
+        self.config.footer_region = ScreenRegion(x1, y1, x2, y2)
+        return self
+    
+    def with_queue_region(self, x1: int, y1: int, x2: int, y2: int) -> 'ScreenMonitorBuilder':
+        self.config.queue_region = ScreenRegion(x1, y1, x2, y2)
+        return self
+    
+    def with_check_interval(self, interval: float) -> 'ScreenMonitorBuilder':
         self.config.check_interval = interval
         return self
     
-    def set_output_dir(self, directory: str) -> 'MonitorBuilder':
-        self.config.output_dir = directory
+    def with_timeout(self, timeout: float) -> 'ScreenMonitorBuilder':
+        self.config.timeout = timeout
         return self
     
-    def enable_saving(self, enable: bool = True) -> 'MonitorBuilder':
-        self.config.save_on_change = enable
+    def with_output_dir(self, output_dir: str) -> 'ScreenMonitorBuilder':
+        self.config.output_dir = output_dir
         return self
     
-    def enable_full_screenshots(self, enable: bool = True) -> 'MonitorBuilder':
-        self.config.save_full_screenshots = enable
+    def with_excluded_values(self, *values: str) -> 'ScreenMonitorBuilder':
+        self.config.excluded_values = list(values)
         return self
     
-    def enable_ocr(self, enable: bool = True) -> 'MonitorBuilder':
-        self.config.enable_ocr = enable
+    def with_ocr_mode(self, mode: OCRMode) -> 'ScreenMonitorBuilder':
+        self.config.ocr_mode = mode
         return self
     
-    def enable_logging(self, enable: bool = True) -> 'MonitorBuilder':
-        self.config.enable_logging = enable
+    def with_title_triggers(self, *triggers: str) -> 'ScreenMonitorBuilder':
+        self.config.title_triggers = list(triggers)
         return self
     
-    # NEW: Auto-stop methods
-    def set_max_detections(self, max_detections: int) -> 'MonitorBuilder':
-        """Set maximum number of detections before auto-stopping"""
-        self.config.max_detections = max_detections
-        self.config.auto_stop = True
+    def with_footer_triggers(self, *triggers: str) -> 'ScreenMonitorBuilder':
+        self.config.footer_triggers = list(triggers)
         return self
     
-    def enable_auto_stop(self, enable: bool = True) -> 'MonitorBuilder':
-        """Enable or disable auto-stop feature"""
-        self.config.auto_stop = enable
+    def with_callback(self, callback_type: str, callback: Callable) -> 'ScreenMonitorBuilder':
+        if callback_type == 'on_queue_found':
+            self.config.on_queue_found = callback
+        elif callback_type == 'on_change_detected':
+            self.config.on_change_detected = callback
+        elif callback_type == 'on_error':
+            self.config.on_error = callback
+        elif callback_type == 'on_status_change':
+            self.config.on_status_change = callback
         return self
     
-    def add_region(self, name: str, x1: int, y1: int, x2: int, y2: int) -> 'MonitorBuilder':
-        region = ScreenRegion(x1, y1, x2, y2, name)
-        self.regions[name] = region
+    def with_save_on_change(self, enabled: bool = True) -> 'ScreenMonitorBuilder':
+        self.config.save_on_change = enabled
         return self
     
-    def add_callback(self, callback: Callable) -> 'MonitorBuilder':
-        self.callbacks.append(callback)
+    def with_logging(self, enabled: bool = True, log_file: str = "monitor.log") -> 'ScreenMonitorBuilder':
+        self.config.log_enabled = enabled
+        self.config.log_file = log_file
+        return self
+    
+    def with_queue_patterns(self, *patterns: str) -> 'ScreenMonitorBuilder':
+        self.config.queue_patterns = list(patterns)
         return self
     
     def build(self) -> ScreenMonitor:
-        monitor = ScreenMonitor(self.config)
-        for name, region in self.regions.items():
-            monitor.add_region(name, region)
-        for callback in self.callbacks:
-            monitor.set_callback(callback)
-        return monitor
+        """Build the ScreenMonitor instance"""
+        return ScreenMonitor(self.config)
+
 
 # Convenience functions
-def create_monitor_with_regions(title_region: ScreenRegion, 
-                               footer_region: ScreenRegion,
-                               queue_region: ScreenRegion,
-                               **kwargs) -> ScreenMonitor:
-    """Create a monitor with the three standard regions"""
-    builder = MonitorBuilder()
+def create_monitor_from_regions(title_region: Optional[Tuple[int, int, int, int]] = None,
+                                footer_region: Optional[Tuple[int, int, int, int]] = None,
+                                queue_region: Optional[Tuple[int, int, int, int]] = None,
+                                **kwargs) -> ScreenMonitor:
+    """
+    Create a ScreenMonitor from coordinate tuples
     
-    # Apply configuration
+    Args:
+        title_region: (x1, y1, x2, y2) tuple for title region
+        footer_region: (x1, y1, x2, y2) tuple for footer region
+        queue_region: (x1, y1, x2, y2) tuple for queue region
+        **kwargs: Additional configuration options
+    
+    Returns:
+        Configured ScreenMonitor instance
+    """
+    builder = ScreenMonitorBuilder()
+    
+    if title_region:
+        builder.with_title_region(*title_region)
+    if footer_region:
+        builder.with_footer_region(*footer_region)
+    if queue_region:
+        builder.with_queue_region(*queue_region)
+    
+    # Apply additional kwargs
     for key, value in kwargs.items():
-        if hasattr(builder, f"set_{key}"):
-            getattr(builder, f"set_{key}")(value)
-    
-    builder.add_region("title", title_region.x1, title_region.y1, title_region.x2, title_region.y2)
-    builder.add_region("footer", footer_region.x1, footer_region.y1, footer_region.x2, footer_region.y2)
-    builder.add_region("queue", queue_region.x1, queue_region.y1, queue_region.x2, queue_region.y2)
+        if hasattr(builder, f"with_{key}"):
+            getattr(builder, f"with_{key}")(value)
     
     return builder.build()
+
+
+def get_mouse_position() -> Tuple[int, int]:
+    """Get current mouse position"""
+    return pyautogui.position()
+
+
+def get_screen_size() -> Tuple[int, int]:
+    """Get screen size"""
+    return pyautogui.size()
+
+
+def get_region_interactive(name: str) -> ScreenRegion:
+    """Get region coordinates interactively using mouse"""
+    print(f"\n--- Setting up {name} ---")
+    print("Move mouse to top-left corner and press Enter")
+    input("Press Enter when mouse is in position...")
+    x1, y1 = pyautogui.position()
+    print(f"Top-left: ({x1}, {y1})")
+    
+    print("Move mouse to bottom-right corner and press Enter")
+    input("Press Enter when mouse is in position...")
+    x2, y2 = pyautogui.position()
+    print(f"Bottom-right: ({x2}, {y2})")
+    
+    return ScreenRegion(x1, y1, x2, y2)
+
+
+def setup_regions_interactive() -> Tuple[ScreenRegion, ScreenRegion, ScreenRegion]:
+    """Setup all regions interactively"""
+    title_region = get_region_interactive("Title Box")
+    footer_region = get_region_interactive("Footer Button")
+    queue_region = get_region_interactive("Queue Number")
+    return title_region, footer_region, queue_region
+
+
+# Example usage and CLI
+def main():
+    """Example usage of the library"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Screen Monitor with OCR")
+    parser.add_argument("--interactive", "-i", action="store_true", 
+                       help="Use interactive region setup")
+    parser.add_argument("--timeout", "-t", type=float, 
+                       help="Timeout in seconds")
+    parser.add_argument("--interval", type=float, default=1.0,
+                       help="Check interval in seconds")
+    parser.add_argument("--output", "-o", default=".screenshots",
+                       help="Output directory")
+    parser.add_argument("--title", nargs=4, type=int, metavar=('x1', 'y1', 'x2', 'y2'),
+                       help="Title region coordinates")
+    parser.add_argument("--footer", nargs=4, type=int, metavar=('x1', 'y1', 'x2', 'y2'),
+                       help="Footer region coordinates")
+    parser.add_argument("--queue", nargs=4, type=int, metavar=('x1', 'y1', 'x2', 'y2'),
+                       help="Queue region coordinates")
+    parser.add_argument("--exclude", nargs="+", default=["1"],
+                       help="Values to exclude (default: 1)")
+    parser.add_argument("--test", action="store_true",
+                       help="Test regions and OCR before monitoring")
+    
+    args = parser.parse_args()
+    
+    # Setup regions
+    if args.interactive:
+        title_region, footer_region, queue_region = setup_regions_interactive()
+    elif args.title and args.footer and args.queue:
+        title_region = ScreenRegion(*args.title)
+        footer_region = ScreenRegion(*args.footer)
+        queue_region = ScreenRegion(*args.queue)
+    else:
+        print("Please provide regions or use --interactive")
+        return
+    
+    # Create monitor
+    monitor = ScreenMonitorBuilder() \
+        .with_title_region(title_region.x1, title_region.y1, title_region.x2, title_region.y2) \
+        .with_footer_region(footer_region.x1, footer_region.y1, footer_region.x2, footer_region.y2) \
+        .with_queue_region(queue_region.x1, queue_region.y1, queue_region.x2, queue_region.y2) \
+        .with_check_interval(args.interval) \
+        .with_timeout(args.timeout) \
+        .with_output_dir(args.output) \
+        .with_excluded_values(*args.exclude) \
+        .with_ocr_mode(OCRMode.STANDARD) \
+        .with_save_on_change(True) \
+        .with_logging(True) \
+        .build()
+    
+    # Test if requested
+    if args.test:
+        print("Testing regions...")
+        region_test = monitor.test_regions()
+        for name, valid in region_test.items():
+            print(f"  {name}: {'✓' if valid else '✗'}")
+        
+        print("\nTesting OCR...")
+        ocr_results = monitor.test_ocr()
+        for name, result in ocr_results.items():
+            print(f"  {name}: '{result.text}'")
+            if result.queue_number:
+                print(f"    Queue: {result.queue_number} (valid: {result.is_valid})")
+    
+    # Start monitoring
+    print("\n" + "="*50)
+    queue_number = monitor.monitor()
+    
+    if queue_number:
+        print(f"\n✅ Queue number found: {queue_number}")
+        print(f"Total changes detected: {monitor.change_count}")
+        return queue_number
+    else:
+        print("\n❌ No valid queue number found")
+        print(f"Status: {monitor.get_status().value}")
+        return None
+
+
+if __name__ == "__main__":
+    main()

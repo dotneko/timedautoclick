@@ -9,7 +9,6 @@ import sys
 import time
 import datetime
 import hashlib
-import signal
 from typing import Optional, Tuple, List
 from dataclasses import dataclass
 from pathlib import Path
@@ -98,10 +97,6 @@ class ScreenMonitor:
         except:
             pass  # Use default path
         
-        # Control flags
-        self.stop_monitoring = False
-        self.queue_number_found = None
-    
     def capture_region(self, region: ScreenRegion) -> Image.Image:
         """Capture a specific screen region"""
         screenshot = pyautogui.screenshot(region=(region.x1, region.y1, 
@@ -142,6 +137,7 @@ class ScreenMonitor:
             processed_image = image
         
         # OCR configuration for better text extraction
+        #custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz - '
         custom_config = '--psm 6 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
 
         try:
@@ -178,7 +174,7 @@ class ScreenMonitor:
             r'([A-Z]{2,3}-\d+)',  # Pattern like AB-123
             r'(\d+-\d+)',  # Pattern like 123-456
             r'#(\d+)',  # Pattern like #123
-            r'(\d{2,})'  # Just digits, at least 2 digits
+            r'(\d{2,})'  # Just digits, at least 4
         ]
         
         for pattern in patterns:
@@ -190,72 +186,19 @@ class ScreenMonitor:
         cleaned = re.sub(r'[^A-Za-z0-9\-]', '', text)
         return cleaned if cleaned else None
     
-    def is_valid_queue_number(self, queue_number: str) -> bool:
-        """
-        Check if the queue number is valid (not "1")
-        
-        Args:
-            queue_number: The queue number to validate
-        
-        Returns:
-            True if queue number is not "1", False otherwise
-        """
-        if not queue_number:
-            return False
-        
-        # Remove any leading/trailing whitespace
-        queue_number = queue_number.strip()
-        
-        # Check if it's exactly "1" (case insensitive)
-        if queue_number.lower() == "1":
-            return False
-        
-        # Also check if it's "1" with common variations
-        if queue_number.lower() in ["1", "one", "i"]:
-            return False
-        
-        return True
-    
-    def monitor(self, timeout: Optional[float] = None) -> Optional[str]:
-        """
-        Main monitoring loop with timeout support
-        
-        Args:
-            timeout: Maximum time to monitor in seconds (None for no timeout)
-        
-        Returns:
-            The first queue number not equal to "1", or None if not found
-        """
+    def monitor(self, stop_event=None):
+        """Main monitoring loop"""
         print(f"Starting screen monitor...")
         print(f"Title region: ({self.title_region.x1}, {self.title_region.y1}) to ({self.title_region.x2}, {self.title_region.y2})")
         print(f"Footer region: ({self.footer_region.x1}, {self.footer_region.y1}) to ({self.footer_region.x2}, {self.footer_region.y2})")
         print(f"Queue region: ({self.queue_region.x1}, {self.queue_region.y1}) to ({self.queue_region.x2}, {self.queue_region.y2})")
         print(f"Check interval: {self.check_interval}s")
         print(f"Screenshots saved to: {self.output_dir}")
-        print(f"Timeout: {timeout if timeout else 'No timeout'}")
-        print("Monitoring for first queue number not equal to '1'...")
-        print("Press Ctrl+C to stop monitoring (will not exit program)")
+        print("Monitoring... Press Ctrl+C to stop")
         print("-" * 50)
         
-        start_time = time.time()
-        
-        # Set up signal handler for graceful interruption
-        def signal_handler(signum, frame):
-            print("\n🛑 Keyboard interrupt received - stopping monitoring...")
-            self.stop_monitoring = True
-        
-        # Register signal handler
-        original_handler = signal.signal(signal.SIGINT, signal_handler)
-        
         try:
-            while not self.stop_monitoring:
-                # Check timeout
-                if timeout is not None:
-                    elapsed = time.time() - start_time
-                    if elapsed >= timeout:
-                        print(f"⏰ Timeout reached ({timeout}s). Stopping monitoring...")
-                        break
-                
+            while stop_event is None or not stop_event.is_set():
                 # Capture all regions
                 title_image = self.capture_region(self.title_region)
                 footer_image = self.capture_region(self.footer_region)
@@ -293,37 +236,28 @@ class ScreenMonitor:
                 
                 # Save queue information when conditions are met
                 if (title_matches or footer_matches) and queue_text:
-                    # Extract queue number
+                    # Save queue screenshot
                     queue_number = self.extract_queue_number(queue_text)
                     
-                    if queue_number and self.is_valid_queue_number(queue_number):
-                        # Found a valid queue number (not "1")
-                        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                        queue_screenshot_path = self.queue_dir / f"queue_{timestamp}_{queue_number}.png"
-                        queue_image.save(queue_screenshot_path)
-                        
-                        # Save full screenshot for context
-                        full_screenshot_path = self.full_dir / f"full_{timestamp}_{queue_number}.png"
-                        full_screenshot.save(full_screenshot_path)
-                        
-                        # Save queue information to log file
-                        log_file = self.output_dir / "queue_log.txt"
-                        with open(log_file, 'a') as f:
-                            f.write(f"[{datetime.datetime.now().isoformat()}] ✅ Queue Number Found: {queue_number}\n")
-                            f.write(f"  Title Text: '{title_text}'\n")
-                            f.write(f"  Footer Text: '{footer_text}'\n")
-                            f.write(f"  Full Text: '{queue_text}'\n")
-                            f.write(f"  Screenshots: {queue_screenshot_path.name}, {full_screenshot_path.name}\n")
-                            f.write("-" * 50 + "\n")
-                        
-                        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] ✅ Valid queue number captured: {queue_number}")
-                        
-                        # Store and return the queue number
-                        self.queue_number_found = queue_number
-                        break
-                    else:
-                        # Found queue text but it's "1" or invalid
-                        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Queue number found but it's '1' or invalid: '{queue_number}' - continuing...")
+                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    queue_screenshot_path = self.queue_dir / f"queue_{timestamp}_{queue_number}.png"
+                    queue_image.save(queue_screenshot_path)
+                    
+                    # Save full screenshot for context
+                    full_screenshot_path = self.full_dir / f"full_{timestamp}_{queue_number}.png"
+                    full_screenshot.save(full_screenshot_path)
+                    
+                    # Save queue information to log file
+                    log_file = self.output_dir / "queue_log.txt"
+                    with open(log_file, 'a') as f:
+                        f.write(f"[{datetime.datetime.now().isoformat()}] Queue Number: {queue_number}\n")
+                        f.write(f"  Title Text: '{title_text}'\n")
+                        f.write(f"  Footer Text: '{footer_text}'\n")
+                        f.write(f"  Full Text: '{queue_text}'\n")
+                        f.write(f"  Screenshots: {queue_screenshot_path.name}, {full_screenshot_path.name}\n")
+                        f.write("-" * 50 + "\n")
+                    
+                    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] ✅ Queue number captured: {queue_number}")
                 
                 # Update state
                 self.last_title_text = title_text
@@ -335,15 +269,11 @@ class ScreenMonitor:
                 # Wait before next check
                 time.sleep(self.check_interval)
                 
+        except KeyboardInterrupt:
+            print(f"\nMonitoring stopped. Total changes detected: {self.change_count}")
         except Exception as e:
             print(f"Error in monitoring loop: {e}")
             raise
-        finally:
-            # Restore original signal handler
-            signal.signal(signal.SIGINT, original_handler)
-        
-        # Return the found queue number or None
-        return self.queue_number_found
 
 def get_screen_regions_interactive():
     """Get screen regions interactively from user"""
@@ -426,12 +356,7 @@ def main():
             y2=486
         )
     
-    # Get user preferences
-    print("\nEnter monitoring options:")
-    timeout_input = input("Enter timeout in seconds (press Enter for no timeout): ").strip()
-    timeout = float(timeout_input) if timeout_input else None
-    
-    input("Press Enter to start screen monitor...")
+    input("Press enter to start screen monitor...")
 
     # Create monitor instance
     monitor = ScreenMonitor(
@@ -443,22 +368,8 @@ def main():
         save_on_change=True
     )
     
-    # Start monitoring with timeout
-    queue_number = monitor.monitor(timeout=timeout)
-    
-    # Return the queue number to main function
-    if queue_number:
-        print(f"\n✅ Successfully captured queue number: {queue_number}")
-        print(f"Total changes detected: {monitor.change_count}")
-    else:
-        print("\n❌ No valid queue number found (not equal to '1')")
-        if timeout:
-            print(f"Timeout of {timeout}s reached without finding a valid queue number")
-    
-    # Return the queue number for use by calling code
-    return queue_number
+    # Start monitoring
+    monitor.monitor()
 
 if __name__ == "__main__":
-    # Store the result for potential use
-    result_queue_number = main()
-    print(f"\nReturned value: {result_queue_number}")
+    main()
