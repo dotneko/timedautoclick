@@ -43,9 +43,17 @@ class SPLoginTrackerCLI:
         self.db.create_table(self.table_name, columns, primary_key="id")
     
     def _validate_date(self, date_str: str) -> bool:
-        """Validate date format dd-mm-yyyy."""
+        """Validate date format yyyy-mm-dd."""
         try:
-            datetime.strptime(date_str, "%d-%m-%Y")
+            datetime.strptime(date_str, "%Y-%m-%d")
+            return True
+        except ValueError:
+            return False
+
+    def _validate_datetime(self, date_str: str) -> bool:
+        """Validate date format yyyy-mm-dd HH:MM:SS.mss."""
+        try:
+            datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S.%f")
             return True
         except ValueError:
             return False
@@ -64,10 +72,10 @@ class SPLoginTrackerCLI:
         """Insert a new record."""
         # Validate inputs
         if not self._validate_date(execdate):
-            print(f"Error: Invalid execdate format '{execdate}'. Use dd-mm-yyyy")
+            print(f"Error: Invalid execdate format '{execdate}'. Use yyyy-mm-dd HH:MM:SS.sss")
             return
         if not self._validate_date(bookdate):
-            print(f"Error: Invalid bookdate format '{bookdate}'. Use dd-mm-yyyy")
+            print(f"Error: Invalid bookdate format '{bookdate}'. Use yyyy-mm-dd")
             return
         if not self._validate_day(day):
             print(f"Error: Invalid day '{day}'. Use 3-letter abbreviation (MON, TUE, etc.)")
@@ -194,12 +202,12 @@ class SPLoginTrackerCLI:
         
         # Validate inputs
         if "execdate" in kwargs and kwargs["execdate"]:
-            if not self._validate_date(kwargs["execdate"]):
-                print(f"Error: Invalid execdate format '{kwargs['execdate']}'. Use dd-mm-yyyy")
+            if not self._validate_datetime(kwargs["execdate"]):
+                print(f"Error: Invalid execdate format '{kwargs['execdate']}'. Use yyyy-mm-dd HH:MM:SS.sss")
                 return
         if "bookdate" in kwargs and kwargs["bookdate"]:
             if not self._validate_date(kwargs["bookdate"]):
-                print(f"Error: Invalid bookdate format '{kwargs['bookdate']}'. Use dd-mm-yyyy")
+                print(f"Error: Invalid bookdate format '{kwargs['bookdate']}'. Use yyyy-mm-dd")
                 return
         if "day" in kwargs and kwargs["day"]:
             if not self._validate_day(kwargs["day"]):
