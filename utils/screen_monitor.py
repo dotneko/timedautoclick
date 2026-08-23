@@ -22,6 +22,7 @@ import numpy as np
 from PIL import Image
 import pytesseract
 
+HOME_ASSIGN_QUEUE="10"
 
 class OCRMode(Enum):
     """OCR preprocessing modes"""
@@ -100,6 +101,7 @@ class MonitorConfig:
     title_region: Optional[ScreenRegion] = None
     footer_region: Optional[ScreenRegion] = None
     queue_region: Optional[ScreenRegion] = None
+    home_region: Optional[ScreenRegion] = None
     
     # Monitoring settings
     check_interval: float = 1.0
@@ -119,13 +121,14 @@ class MonitorConfig:
         #r'(?:queue|position|number|#)\s*[:.]?\s*([A-Z0-9\-]+)',
         #r'([A-Z]{2,3}-\d+)',
         #r'(\d+-\d+)',
-        r'(\d+)',
-        r'(\d{2,})'
+        #r'(\d+)',
+        r'(\d{3,})'     # At least 3 digits
     ])
     
     # Trigger conditions
     title_triggers: List[str] = field(default_factory=lambda: ["VirtualWaitingRoom"])
     footer_triggers: List[str] = field(default_factory=lambda: ["Exit"])
+    home_triggers: List[str] = field(default_factor=lambda: ["YourSchedule"])
     
     # Callbacks
     on_queue_found: Optional[Callable] = None
@@ -178,6 +181,8 @@ class ScreenMonitor:
             raise ValueError("Invalid footer region configuration")
         if self.config.queue_region and not self.config.queue_region.is_valid():
             raise ValueError("Invalid queue region configuration")
+        if self.config.home_region and not self.config.home_region.is_valid():
+            raise ValueError("Invalid home region configuration")
         
         if self.config.check_interval <= 0:
             raise ValueError("Check interval must be positive")
@@ -195,6 +200,7 @@ class ScreenMonitor:
             'title': self.output_dir / "title_changes",
             'footer': self.output_dir / "footer_changes",
             'queue': self.output_dir / "queue_captures",
+            'home': self.output_dir / "home_captures",
             'full': self.output_dir / "full_captures",
             'all': self.output_dir / "all_captures"
         }
@@ -395,6 +401,11 @@ class ScreenMonitor:
         footer_match = any(trigger in footer_text for trigger in self.config.footer_triggers)
         return title_match or footer_match
     
+    def _check_homepage_trigger(self, title_text: str, footer_text: str) -> bool:
+        """Check if homepagetrigger conditions are met"""
+        home_match = any(trigger in home_text for trigger in self.config.home_triggers)
+        return home_match
+
     def _process_ocr_results(self, results: Dict[str, OCRResult]) -> Optional[str]:
         """
         Process OCR results and check for queue numbers
@@ -406,6 +417,7 @@ class ScreenMonitor:
         title_result = results.get('title', OCRResult(text="", region_name="title"))
         footer_result = results.get('footer', OCRResult(text="", region_name="footer"))
         queue_result = results.get('queue', OCRResult(text="", region_name="queue"))
+        home_result = results.get('home', OCRResult(text="", region_name="home"))
         
         # Check for changes
         for region_name, result in results.items():
@@ -429,6 +441,43 @@ class ScreenMonitor:
             self.last_hashes[region_name] = text_hash
             self.last_ocr_results[region_name] = result
         
+        # Check if home page entered (without needing to queue)
+        if self._check_homepage_trigger(home_result.txt):
+            with self._result_lock:
+                self.found_queue_numbers.append(HOME_ASSIGN_QUEUE)
+
+            # Save screenshots
+            if self.config.save_on_change:
+                # Save queue region
+                # if self.config.queue_region:
+                #     self._save_region_screenshot(
+                #         self._capture_region(self.config.queue_region),
+                #         "queue",
+                #         queue_result.queue_number
+                #     )
+                
+                # Save full screenshot
+                full_screenshot = pyautogui.screenshot()
+                self._save_region_screenshot(
+                    full_screenshot,
+                    "full",
+                    HOME_ASSIGN_QUEUE
+                )
+            
+            # Log the event
+            self._log_event("HOME_WITHOUT_QUEUE", {
+                'queue_number': HOME_ASSIGN_QUEUE,
+                'title_text': title_result.text,
+                'footer_text': footer_result.text,
+                'queue_text': queue_result.text
+            })
+            
+            # Call callback
+            if self.config.on_queue_found:
+                self.config.on_queue_found(HOME_ASSIGN_QUEUE, results)
+            
+            return HOME_ASSIGN_QUEUE
+
         # Check for queue number
         if queue_result.queue_number and queue_result.is_valid:
             # Check trigger conditions
@@ -523,7 +572,8 @@ class ScreenMonitor:
                 regions = {
                     'title': (self.config.title_region, "title"),
                     'footer': (self.config.footer_region, "footer"),
-                    'queue': (self.config.queue_region, "queue")
+                    'queue': (self.config.queue_region, "queue"),
+                    'home': (self.config.home_region, "home")
                 }
                 
                 results = {}
@@ -603,7 +653,8 @@ class ScreenMonitor:
         for name, region in [
             ('title', self.config.title_region),
             ('footer', self.config.footer_region),
-            ('queue', self.config.queue_region)
+            ('queue', self.config.queue_region),
+            ('home', self.config.home_region),
         ]:
             if region:
                 try:
@@ -621,7 +672,8 @@ class ScreenMonitor:
         for name, region in [
             ('title', self.config.title_region),
             ('footer', self.config.footer_region),
-            ('queue', self.config.queue_region)
+            ('queue', self.config.queue_region),
+            ('home', self.config.home_region)
         ]:
             if region:
                 image = self._capture_region(region)
@@ -647,6 +699,10 @@ class ScreenMonitorBuilder:
     
     def with_queue_region(self, x1: int, y1: int, x2: int, y2: int) -> 'ScreenMonitorBuilder':
         self.config.queue_region = ScreenRegion(x1, y1, x2, y2)
+        return self
+
+    def with_home_region(self, x1: int, y1: int, x2: int, y2: int) -> 'ScreenMonitorBuilder':
+        self.config.home_region = ScreenRegion(x1, y1, x2, y2)
         return self
     
     def with_check_interval(self, interval: float) -> 'ScreenMonitorBuilder':
@@ -710,6 +766,7 @@ class ScreenMonitorBuilder:
 def create_monitor_from_regions(title_region: Optional[Tuple[int, int, int, int]] = None,
                                 footer_region: Optional[Tuple[int, int, int, int]] = None,
                                 queue_region: Optional[Tuple[int, int, int, int]] = None,
+                                home_region: Optional[Tuple[int, int, int, int]] = None
                                 **kwargs) -> ScreenMonitor:
     """
     Create a ScreenMonitor from coordinate tuples
@@ -718,6 +775,7 @@ def create_monitor_from_regions(title_region: Optional[Tuple[int, int, int, int]
         title_region: (x1, y1, x2, y2) tuple for title region
         footer_region: (x1, y1, x2, y2) tuple for footer region
         queue_region: (x1, y1, x2, y2) tuple for queue region
+        home_region: (x1, y1, x2, y2) tuple for home region
         **kwargs: Additional configuration options
     
     Returns:
@@ -731,6 +789,8 @@ def create_monitor_from_regions(title_region: Optional[Tuple[int, int, int, int]
         builder.with_footer_region(*footer_region)
     if queue_region:
         builder.with_queue_region(*queue_region)
+    if home_region:
+        builder.with_queue_region(*home_region)
     
     # Apply additional kwargs
     for key, value in kwargs.items():
@@ -771,6 +831,8 @@ def setup_regions_interactive() -> Tuple[ScreenRegion, ScreenRegion, ScreenRegio
     title_region = get_region_interactive("Title Box")
     footer_region = get_region_interactive("Footer Button")
     queue_region = get_region_interactive("Queue Number")
+    home_region = get_region_interactive("Home Trigger")
+
     return title_region, footer_region, queue_region
 
 
@@ -803,11 +865,12 @@ def main():
     
     # Setup regions
     if args.interactive:
-        title_region, footer_region, queue_region = setup_regions_interactive()
+        title_region, footer_region, queue_region, home_region = setup_regions_interactive()
     elif args.title and args.footer and args.queue:
         title_region = ScreenRegion(*args.title)
         footer_region = ScreenRegion(*args.footer)
         queue_region = ScreenRegion(*args.queue)
+        home_region = ScreenRegion(*args.home)
     else:
         print("Please provide regions or use --interactive")
         return
@@ -817,6 +880,7 @@ def main():
         .with_title_region(title_region.x1, title_region.y1, title_region.x2, title_region.y2) \
         .with_footer_region(footer_region.x1, footer_region.y1, footer_region.x2, footer_region.y2) \
         .with_queue_region(queue_region.x1, queue_region.y1, queue_region.x2, queue_region.y2) \
+        .with_home_region(home_region.x1, home_region.y1, home_region.x2, home_region.y2) \
         .with_check_interval(args.interval) \
         .with_timeout(args.timeout) \
         .with_output_dir(args.output) \

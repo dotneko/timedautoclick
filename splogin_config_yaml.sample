@@ -8,22 +8,22 @@ profiles:
     name: profile1
     cliclick_path: /opt/homebrew/bin/cliclick
     start_coords: 179,734
-    close_coords: 180,280
-    alive_box: (10,100,500,800)
-    queue_box: (50,500,200,600)
-    early_box: (50,600,200,700)
-    title_box: (100,100,500,200)
-    footer_box: (100,700,500,800)
+    close_coords: 166,594
+    alive_box: (10,150,336,702)
+    queue_box: (92, 381, 200, 415)
+    title_box: (72,473,293,511)
+    home_box: (1,1,1,1)
+    footer_box: (30, 695, 309, 728)
   template:
     name: template
     cliclick_path: /opt/homebrew/bin/cliclick
-    start_coords: 1,1
-    close_coords: 200,600
-    alive_box: (10,100,500,800)
-    queue_box: (50,500,200,600)
-    early_box: (50,600,200,700)
-    title_box: (100,100,500,200)
-    footer_box: (100,700,500,800)
+    start_coords: 179,734
+    close_coords: 166,594
+    alive_box: (10,150,336,702)
+    queue_box: (92, 381, 200, 415)
+    title_box: (72,473,293,511)
+    home_box: (1,1,1,1)
+    footer_box: (30, 695, 309, 728)
 sequences:
   login:
     start_time: 07:00:00
