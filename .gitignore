@@ -2,6 +2,7 @@ config.local
 *.db
 *.yaml
 .*
+screenshots/
 
 # Python-generated files
 __pycache__/

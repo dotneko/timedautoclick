@@ -111,7 +111,7 @@ class MonitorConfig:
     ocr_mode: OCRMode = OCRMode.STANDARD
     
     # Output settings
-    output_dir: str = ".screenshots"
+    output_dir: str = "screenshots"
     log_enabled: bool = True
     log_file: str = "monitor.log"
     
@@ -128,7 +128,7 @@ class MonitorConfig:
     # Trigger conditions
     title_triggers: List[str] = field(default_factory=lambda: ["VirtualWaitingRoom"])
     footer_triggers: List[str] = field(default_factory=lambda: ["Exit"])
-    home_triggers: List[str] = field(default_factor=lambda: ["YourSchedule"])
+    home_triggers: List[str] = field(default_factory=lambda: ["YourSchedule"])
     
     # Callbacks
     on_queue_found: Optional[Callable] = None
@@ -401,7 +401,7 @@ class ScreenMonitor:
         footer_match = any(trigger in footer_text for trigger in self.config.footer_triggers)
         return title_match or footer_match
     
-    def _check_homepage_trigger(self, title_text: str, footer_text: str) -> bool:
+    def _check_homepage_trigger(self, home_text: str) -> bool:
         """Check if homepagetrigger conditions are met"""
         home_match = any(trigger in home_text for trigger in self.config.home_triggers)
         return home_match
@@ -442,7 +442,7 @@ class ScreenMonitor:
             self.last_ocr_results[region_name] = result
         
         # Check if home page entered (without needing to queue)
-        if self._check_homepage_trigger(home_result.txt):
+        if self._check_homepage_trigger(home_result.text):
             with self._result_lock:
                 self.found_queue_numbers.append(HOME_ASSIGN_QUEUE)
 
@@ -766,7 +766,7 @@ class ScreenMonitorBuilder:
 def create_monitor_from_regions(title_region: Optional[Tuple[int, int, int, int]] = None,
                                 footer_region: Optional[Tuple[int, int, int, int]] = None,
                                 queue_region: Optional[Tuple[int, int, int, int]] = None,
-                                home_region: Optional[Tuple[int, int, int, int]] = None
+                                home_region: Optional[Tuple[int, int, int, int]] = None,
                                 **kwargs) -> ScreenMonitor:
     """
     Create a ScreenMonitor from coordinate tuples
