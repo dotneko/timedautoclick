@@ -6,6 +6,33 @@ from utils.sqlite_manager import DatabaseManager
 DEFAULT_DB = "login_tracker.db"
 TABLE_NAME = "attempts"
 
+def query_all(db, profile=None, limit=None):
+    """
+    Query all records.
+    
+    Args:
+        db: DatabaseManager instance
+        profile: Optional profile filter
+        limit: Optional limit on number of records
+    
+    Returns:
+        List of records
+    """
+    where_clause = None
+    params = None
+    
+    if profile:
+        where_clause = "profile = ?"
+        params = (profile,)
+    
+    return db.select(
+        TABLE_NAME,
+        where=where_clause,
+        params=params,
+        order_by="queue ASC",
+        limit=limit
+    )
+
 def query_by_day(db, day, profile=None, limit=None):
     """
     Query records for a specific day of the week.
@@ -94,6 +121,34 @@ def query_weekends(db, profile=None, limit=None):
         limit=limit
     )
 
+def query_weekends_and_holidays(db, profile=None, limit=None):
+    """
+    Query records that include weekends (Sat-Sun) and/or public holidays.
+    
+    Args:
+        db: DatabaseManager instance
+        profile: Optional profile filter
+        limit: Optional limit on number of records
+    
+    Returns:
+        List of records
+    """
+    # Records where day is SAT or SUN, OR ph (public holiday) is set to 'Y'
+    where_clause = "(day IN (?, ?) OR ph = ?)"
+    params = ['SAT', 'SUN', 'Y']
+    
+    if profile:
+        where_clause += " AND profile = ?"
+        params.append(profile)
+    
+    return db.select(
+        TABLE_NAME,
+        where=where_clause,
+        params=tuple(params),
+        order_by="queue ASC",
+        limit=limit
+    )
+
 def display_results(records, title):
     """
     Display query results in a formatted table.
@@ -127,6 +182,15 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # Query all records (default when no query type specified)
+  python query_logins.py
+  
+  # Query all records with profile filter
+  python query_logins.py --profile test_profile_1
+  
+  # Query all records showing top 10 results
+  python query_logins.py --limit 10
+  
   # Query all records for Monday
   python query_logins.py --day Mon
   
@@ -136,13 +200,16 @@ Examples:
   # Query weekends (SAT-SUN) showing top 5 results
   python query_logins.py --weekends --limit 5
   
+  # Query weekends and public holidays
+  python query_logins.py --hols
+  
   # Query specific day with profile and limit
   python query_logins.py --day Wed --profile profile_2 --limit 10
         """
     )
     
-    # Create mutually exclusive group for query type
-    query_group = parser.add_mutually_exclusive_group(required=True)
+    # Create mutually exclusive group for query type (no longer required)
+    query_group = parser.add_mutually_exclusive_group(required=False)
     query_group.add_argument(
         '--day',
         type=str,
@@ -157,6 +224,11 @@ Examples:
         '--weekends',
         action='store_true',
         help='Query all weekends (SAT-SUN)'
+    )
+    query_group.add_argument(
+        '--hols',
+        action='store_true',
+        help='Query records that include weekends (SAT-SUN) and/or public holidays'
     )
     
     # Optional filters
@@ -199,6 +271,13 @@ Examples:
         elif args.weekends:
             records = query_weekends(db, args.profile, args.limit)
             display_results(records, "Weekend Records (Sat-Sun, ordered by queue ASC)")
+        elif args.hols:
+            records = query_weekends_and_holidays(db, args.profile, args.limit)
+            display_results(records, "Weekend and Public Holiday Records (ordered by queue ASC)")
+        else:
+            # Default: query all records
+            records = query_all(db, args.profile, args.limit)
+            display_results(records, "All Records (ordered by queue ASC)")
             
     except FileNotFoundError:
         print(f"Error: Database file '{args.db}' not found.", file=sys.stderr)
